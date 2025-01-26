@@ -1,0 +1,13 @@
+project_id          = "saikat-296802"
+region              = "us-central1-f"
+cluster_name        = "gke-cluster"
+network_name        = "tf-cluster-network"
+subnet_name         = "tf-cluster-subnet1"
+pods_range_name     = "k8s-pod-range"
+services_range_name = "k8s-service-range"
+nodepool_name       = "small-pool"
+initial_node_count  = 1
+min_node_count      = 1
+max_node_count      = 2
+machine_type        = "e2-micro"
+release_channel     = "REGULAR"
