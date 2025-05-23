@@ -29,10 +29,8 @@ resources:
   repositories:
     - repository: templates
       type: git
-      name: ccoe/tf-rxo-ccoe-infra
+      name: ccoe/tf-xxxx-ccoe-infra
       ref: apply-message
-
-# ------------------ STAGE 1: Detect Changes ------------------
 
 stages:
 - stage: DetectChanges
@@ -62,24 +60,23 @@ stages:
         echo "##vso[task.setvariable variable=runCompute;isOutput=true]$IS_COMPUTE_MSG_MATCH"
         echo "##vso[task.setvariable variable=runDatabase;isOutput=true]$IS_DATABASE_MSG_MATCH"
       name: SetRunFlags
+  # ✅ Correct place for outputs
+  outputs:
+    runProject: GetChangedFiles.SetRunFlags.runProject
+    runIam: GetChangedFiles.SetRunFlags.runIam
+    runCompute: GetChangedFiles.SetRunFlags.runCompute
+    runDatabase: GetChangedFiles.SetRunFlags.runDatabase
 
-    outputs:
-      runProject: $(SetRunFlags.runProject)
-      runIam: $(SetRunFlags.runIam)
-      runCompute: $(SetRunFlags.runCompute)
-      runDatabase: $(SetRunFlags.runDatabase)
-
-# ------------------ STAGE 2: Project Module ------------------
-
+# ------------------ Stage 2: Project ------------------
 - stage: project
   dependsOn: DetectChanges
-  condition: eq(dependencies.DetectChanges.outputs['GetChangedFiles.runProject'], 'true')
+  condition: eq(dependencies.DetectChanges.outputs['runProject'], 'true')
   jobs:
   - job: variabletest1
     steps:
     - script: |
         echo "Running project stage because runProject is true"
-        echo "runProject: ${{ dependencies.DetectChanges.outputs['GetChangedFiles.runProject'] }}"
+        echo "runProject: ${{ dependencies.DetectChanges.outputs['runProject'] }}"
 
   - template: jobs/ado-publish-job.yml@templates
     parameters:
@@ -92,17 +89,16 @@ stages:
       TF_TOKEN: $(TF_TOKEN)
       terraformDirectory: 'project'
 
-# ------------------ STAGE 3: IAM Module ------------------
-
+# ------------------ Stage 3: IAM ------------------
 - stage: iam
   dependsOn: DetectChanges
-  condition: eq(dependencies.DetectChanges.outputs['GetChangedFiles.runIam'], 'true')
+  condition: eq(dependencies.DetectChanges.outputs['runIam'], 'true')
   jobs:
   - job: variabletest2
     steps:
     - script: |
         echo "Running IAM stage because runIam is true"
-        echo "runIam: ${{ dependencies.DetectChanges.outputs['GetChangedFiles.runIam'] }}"
+        echo "runIam: ${{ dependencies.DetectChanges.outputs['runIam'] }}"
 
   - template: jobs/ado-publish-job.yml@templates
     parameters:
@@ -114,9 +110,3 @@ stages:
       environmentName: 'dev'
       TF_TOKEN: $(TF_TOKEN)
       terraformDirectory: 'iam'
-
-# ------------------ (Optional) More Stages Can Be Added ------------------
-
-# Similar structure can be used for compute and database modules, just ensure:
-# - The step in DetectChanges sets and exports the output variable
-# - You use the correct condition in each stage
