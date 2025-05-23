@@ -1,47 +1,38 @@
-# This pipeline will trigger on commits to 'main' or Pull Requests targeting 'main'
-# if changes are detected in any of the specified Terraform module directories.
-# It will then conditionally run stages only if:
-# 1. Changes are detected in the module's folder (path filter).
-# 2. The commit message contains the corresponding module name (e.g., "billing module changes").
-
 trigger:
   branches:
     include:
-      - main # Trigger CI pipeline on commits to 'main'
+      - alldir-yaml
   paths:
     include:
-      - terraform/modules/compute/*
-      - terraform/modules/network/*
-      - terraform/modules/billing/*
-      - terraform/modules/vpc/*
-    exclude:
-      # Optional: Exclude specific file types or subdirectories from triggering CI
-      # - terraform/modules/*/docs/*
-      # - terraform/modules/*/README.md
+      - project/*
+      - iam/*
+      - network/*
+      - compute/*
+      - database/*
 
 pr:
   branches:
     include:
-      - main # Trigger PR pipeline for PRs targeting 'main'
+      - alldir-yaml
   paths:
     include:
-      - terraform/modules/compute/*
-      - terraform/modules/network/*
-      - terraform/modules/billing/*
-      - terraform/modules/vpc/*
-    exclude:
-      # Optional: Exclude specific file types or subdirectories from triggering PR builds
-      # - terraform/modules/*/docs/*
-      # - terraform/modules/*/README.md
-
-pool:
-  vmImage: 'ubuntu-latest' # Or your preferred agent image
+      - project/*
+      - iam/*
+      - network/*
+      - compute/*
+      - database/*
 
 variables:
-  # Define the base path for your Terraform modules
-  terraformModulesPath: 'terraform/modules'
-  # Capture the full commit message for the current build
-  currentCommitMessage: $(Build.SourceVersionMessage)
+- group: 'ccoe-non-prod'
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: ccoe/tf-rxo-ccoe-infra
+      ref: apply-message
+
+# ------------------ STAGE 1: Detect Changes ------------------
 
 stages:
 - stage: DetectChanges
@@ -50,163 +41,82 @@ stages:
   - job: GetChangedFiles
     displayName: 'Determine Changed Modules'
     steps:
-    - checkout: self # Ensure the repository is checked out
+    - checkout: self
 
     - script: |
-        echo "Determining changed files..."
-        CHANGED_FILES=""
-
-        # Determine the base for git diff based on the build reason
-        if [ "$(Build.Reason)" = "PullRequest" ]; then
-          # For PRs, compare against the target branch
-          echo "Running git diff for Pull Request."
-          CHANGED_FILES=$(git diff --name-only --diff-filter=AMRC $(System.PullRequest.TargetBranch)..$(Build.SourceBranch))
-        else
-          # For other reasons (e.g., CI push), compare against the previous commit
-          echo "Running git diff for CI push."
-          CHANGED_FILES=$(git diff --name-only --diff-filter=AMRC HEAD~1 HEAD)
-        fi
-
-        echo "Changed files detected:"
-        echo "$CHANGED_FILES"
-
-        # Get the commit message from the pipeline variable
-        COMMIT_MSG="${{ variables.currentCommitMessage }}"
+        COMMIT_MSG="$BUILD_SOURCEVERSIONMESSAGE"
         echo "Commit Message: $COMMIT_MSG"
 
-        # Initialize flags for path changes and message matches
-        IS_COMPUTE_PATH_CHANGED="false"
-        IS_NETWORK_PATH_CHANGED="false"
-        IS_BILLING_PATH_CHANGED="false"
-        IS_VPC_PATH_CHANGED="false"
-
+        IS_PROJECT_MSG_MATCH="false"
+        IS_IAM_MSG_MATCH="false"
         IS_COMPUTE_MSG_MATCH="false"
-        IS_NETWORK_MSG_MATCH="false"
-        IS_BILLING_MSG_MATCH="false"
-        IS_VPC_MSG_MATCH="false"
+        IS_DATABASE_MSG_MATCH="false"
 
-        # Check for path changes
-        if echo "$CHANGED_FILES" | grep -q "${{ variables.terraformModulesPath }}/compute/"; then
-          IS_COMPUTE_PATH_CHANGED="true"
-        fi
-        if echo "$CHANGED_FILES" | grep -q "${{ variables.terraformModulesPath }}/network/"; then
-          IS_NETWORK_PATH_CHANGED="true"
-        fi
-        if echo "$CHANGED_FILES" | grep -q "${{ variables.terraformModulesPath }}/billing/"; then
-          IS_BILLING_PATH_CHANGED="true"
-        fi
-        if echo "$CHANGED_FILES" | grep -q "${{ variables.terraformModulesPath }}/vpc/"; then
-          IS_VPC_PATH_CHANGED="true"
-        fi
+        if echo "$COMMIT_MSG" | grep -i "project module"; then IS_PROJECT_MSG_MATCH="true"; fi
+        if echo "$COMMIT_MSG" | grep -i "iam module"; then IS_IAM_MSG_MATCH="true"; fi
+        if echo "$COMMIT_MSG" | grep -i "compute module"; then IS_COMPUTE_MSG_MATCH="true"; fi
+        if echo "$COMMIT_MSG" | grep -i "database module"; then IS_DATABASE_MSG_MATCH="true"; fi
 
-        # Check for commit message matches (case-insensitive for robustness)
-        # The user requested "module name changes" (e.g., "billing module changes")
-        if echo "$COMMIT_MSG" | grep -qi "compute module changes"; then
-          IS_COMPUTE_MSG_MATCH="true"
-        fi
-        if echo "$COMMIT_MSG" | grep -qi "network module changes"; then
-          IS_NETWORK_MSG_MATCH="true"
-        fi
-        if echo "$COMMIT_MSG" | grep -qi "billing module changes"; then
-          IS_BILLING_MSG_MATCH="true"
-        fi
-        if echo "$COMMIT_MSG" | grep -qi "vpc module changes"; then
-          IS_VPC_MSG_MATCH="true"
-        fi
+        echo "##vso[task.setvariable variable=runProject;isOutput=true]$IS_PROJECT_MSG_MATCH"
+        echo "##vso[task.setvariable variable=runIam;isOutput=true]$IS_IAM_MSG_MATCH"
+        echo "##vso[task.setvariable variable=runCompute;isOutput=true]$IS_COMPUTE_MSG_MATCH"
+        echo "##vso[task.setvariable variable=runDatabase;isOutput=true]$IS_DATABASE_MSG_MATCH"
+      name: SetRunFlags
 
-        # Combine conditions: Stage runs only if path changed AND commit message matches
-        RUN_COMPUTE_STAGE="false"
-        RUN_NETWORK_STAGE="false"
-        RUN_BILLING_STAGE="false"
-        RUN_VPC_STAGE="false"
+    outputs:
+      runProject: $(SetRunFlags.runProject)
+      runIam: $(SetRunFlags.runIam)
+      runCompute: $(SetRunFlags.runCompute)
+      runDatabase: $(SetRunFlags.runDatabase)
 
-        if [ "$IS_COMPUTE_PATH_CHANGED" = "true" ] && [ "$IS_COMPUTE_MSG_MATCH" = "true" ]; then
-          RUN_COMPUTE_STAGE="true"
-        fi
-        if [ "$IS_NETWORK_PATH_CHANGED" = "true" ] && [ "$IS_NETWORK_MSG_MATCH" = "true" ]; then
-          RUN_NETWORK_STAGE="true"
-        fi
-        if [ "$IS_BILLING_PATH_CHANGED" = "true" ] && [ "$IS_BILLING_MSG_MATCH" = "true" ]; then
-          RUN_BILLING_STAGE="true"
-        fi
-        if [ "$IS_VPC_PATH_CHANGED" = "true" ] && [ "$IS_VPC_MSG_MATCH" = "true" ]; then
-          RUN_VPC_STAGE="true"
-        fi
+# ------------------ STAGE 2: Project Module ------------------
 
-        # Set output variables for subsequent stages/jobs
-        echo "##vso[task.setvariable variable=runComputeStage;isOutput=true]$RUN_COMPUTE_STAGE"
-        echo "##vso[task.setvariable variable=runNetworkStage;isOutput=true]$RUN_NETWORK_STAGE"
-        echo "##vso[task.setvariable variable=runBillingStage;isOutput=true]$RUN_BILLING_STAGE"
-        echo "##vso[task.setvariable variable=runVPCStage;isOutput=true]$RUN_VPC_STAGE"
-
-        echo "Module change detection complete (Path AND Message):"
-        echo "  Run Compute Stage: $RUN_COMPUTE_STAGE"
-        echo "  Run Network Stage: $RUN_NETWORK_STAGE"
-        echo "  Run Billing Stage: $RUN_BILLING_STAGE"
-        echo "  Run VPC Stage: $RUN_VPC_STAGE"
-      displayName: 'Set Conditional Run Flags'
-      name: SetRunFlags # Name this step to reference its output variables
-
-# --- Conditional Stages for each Terraform Module ---
-
-- stage: ComputeModule
-  displayName: 'Terraform for Compute Module'
-  # Condition to run this stage only if compute module changes were detected AND commit message matches
-  condition: and(succeeded(), eq(dependencies.DetectChanges.outputs['SetRunFlags.runComputeStage'], 'true'))
+- stage: project
+  dependsOn: DetectChanges
+  condition: eq(dependencies.DetectChanges.outputs['GetChangedFiles.runProject'], 'true')
   jobs:
-  - job: ComputePlan
-    displayName: 'Compute Plan & Apply'
+  - job: variabletest1
     steps:
-    - checkout: self # Checkout repository for this job
     - script: |
-        echo "Running Terraform for Compute module due to path change AND commit message match."
-        cd ${{ variables.terraformModulesPath }}/compute
-        terraform init -backend-config="../../../backend.tfvars" # Adjust path as needed
-        terraform plan -var-file="../../../dev.tfvars" # Adjust path as needed
-        # Add terraform apply steps here if desired, possibly with another condition
-      displayName: 'Run Compute Terraform'
+        echo "Running project stage because runProject is true"
+        echo "runProject: ${{ dependencies.DetectChanges.outputs['GetChangedFiles.runProject'] }}"
 
-- stage: NetworkModule
-  displayName: 'Terraform for Network Module'
-  condition: and(succeeded(), eq(dependencies.DetectChanges.outputs['SetRunFlags.runNetworkStage'], 'true'))
-  jobs:
-  - job: NetworkPlan
-    displayName: 'Network Plan & Apply'
-    steps:
-    - checkout: self
-    - script: |
-        echo "Running Terraform for Network module due to path change AND commit message match."
-        cd ${{ variables.terraformModulesPath }}/network
-        terraform init -backend-config="../../../backend.tfvars"
-        terraform plan -var-file="../../../dev.tfvars"
-      displayName: 'Run Network Terraform'
+  - template: jobs/ado-publish-job.yml@templates
+    parameters:
+      targetPath: 'project'
+      artifactName: 'project'
 
-- stage: BillingModule
-  displayName: 'Terraform for Billing Module'
-  condition: and(succeeded(), eq(dependencies.DetectChanges.outputs['SetRunFlags.runBillingStage'], 'true'))
-  jobs:
-  - job: BillingPlan
-    displayName: 'Billing Plan & Apply'
-    steps:
-    - checkout: self
-    - script: |
-        echo "Running Terraform for Billing module due to path change AND commit message match."
-        cd ${{ variables.terraformModulesPath }}/billing
-        terraform init -backend-config="../../../backend.tfvars"
-        terraform plan -var-file="../../../dev.tfvars"
-      displayName: 'Run Billing Terraform'
+  - template: jobs/terraform-plan.yml@templates
+    parameters:
+      environmentName: 'dev'
+      TF_TOKEN: $(TF_TOKEN)
+      terraformDirectory: 'project'
 
-- stage: VPCModule
-  displayName: 'Terraform for VPC Module'
-  condition: and(succeeded(), eq(dependencies.DetectChanges.outputs['SetRunFlags.runVPCStage'], 'true'))
+# ------------------ STAGE 3: IAM Module ------------------
+
+- stage: iam
+  dependsOn: DetectChanges
+  condition: eq(dependencies.DetectChanges.outputs['GetChangedFiles.runIam'], 'true')
   jobs:
-  - job: VPCPlan
-    displayName: 'VPC Plan & Apply'
+  - job: variabletest2
     steps:
-    - checkout: self
     - script: |
-        echo "Running Terraform for VPC module due to path change AND commit message match."
-        cd ${{ variables.terraformModulesPath }}/vpc
-        terraform init -backend-config="../../../backend.tfvars"
-        terraform plan -var-file="../../../dev.tfvars"
-      displayName: 'Run VPC Terraform'
+        echo "Running IAM stage because runIam is true"
+        echo "runIam: ${{ dependencies.DetectChanges.outputs['GetChangedFiles.runIam'] }}"
+
+  - template: jobs/ado-publish-job.yml@templates
+    parameters:
+      targetPath: 'iam'
+      artifactName: 'iam'
+
+  - template: jobs/terraform-plan.yml@templates
+    parameters:
+      environmentName: 'dev'
+      TF_TOKEN: $(TF_TOKEN)
+      terraformDirectory: 'iam'
+
+# ------------------ (Optional) More Stages Can Be Added ------------------
+
+# Similar structure can be used for compute and database modules, just ensure:
+# - The step in DetectChanges sets and exports the output variable
+# - You use the correct condition in each stage
