@@ -1,0 +1,116 @@
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+
+variables:
+  - name: changedModules
+    value: ''
+  - name: runAll
+    value: false
+
+stages:
+- stage: DetectChanges
+  jobs:
+  - job: ParseCommitMessage
+    steps:
+    - bash: |
+        COMMIT_MESSAGE=$(Build.SourceVersionMessage)
+        echo "Commit message: $COMMIT_MESSAGE"
+        
+        # Convert to lowercase for case-insensitive matching
+        MESSAGE=$(echo "$COMMIT_MESSAGE" | tr '[:upper:]' '[:lower:]')
+        
+        # Check for "all" keyword to run everything
+        if [[ $MESSAGE == *"all"* ]]; then
+          echo "##vso[task.setvariable variable=runAll;isOutput=true]true"
+          echo "Running all modules as 'all' was detected in commit message"
+          exit 0
+        fi
+        
+        # Initialize module flags
+        PROJECT_CHANGED=false
+        IAM_CHANGED=false
+        COMPUTE_CHANGED=false
+        DATABASE_CHANGED=false
+        
+        # Check for each module
+        if [[ $MESSAGE == *"project"* ]]; then
+          PROJECT_CHANGED=true
+        fi
+        
+        if [[ $MESSAGE == *"iam"* ]]; then
+          IAM_CHANGED=true
+        fi
+        
+        if [[ $MESSAGE == *"compute"* ]]; then
+          COMPUTE_CHANGED=true
+        fi
+        
+        if [[ $MESSAGE == *"database"* ]]; then
+          DATABASE_CHANGED=true
+        fi
+        
+        # Build the changed modules string
+        CHANGED_MODULES=""
+        if $PROJECT_CHANGED; then
+          CHANGED_MODULES="${CHANGED_MODULES}project,"
+        fi
+        if $IAM_CHANGED; then
+          CHANGED_MODULES="${CHANGED_MODULES}iam,"
+        fi
+        if $COMPUTE_CHANGED; then
+          CHANGED_MODULES="${CHANGED_MODULES}compute,"
+        fi
+        if $DATABASE_CHANGED; then
+          CHANGED_MODULES="${CHANGED_MODULES}database,"
+        fi
+        
+        # Remove trailing comma if any
+        CHANGED_MODULES=${CHANGED_MODULES%,}
+        
+        if [ -z "$CHANGED_MODULES" ]; then
+          echo "No module changes detected in commit message. Running all modules."
+          echo "##vso[task.setvariable variable=runAll;isOutput=true]true"
+        else
+          echo "Changed modules: $CHANGED_MODULES"
+          echo "##vso[task.setvariable variable=changedModules;isOutput=true]$CHANGED_MODULES"
+        fi
+      name: detectChanges
+
+- stage: Project
+  dependsOn: DetectChanges
+  condition: or(eq(dependencies.DetectChanges.outputs['ParseCommitMessage.runAll'], 'true'), contains(dependencies.DetectChanges.outputs['ParseCommitMessage.changedModules'], 'project'))
+  jobs:
+  - job: DeployProject
+    steps:
+    - script: echo "Running Project module deployment"
+      displayName: 'Deploy Project Module'
+
+- stage: IAM
+  dependsOn: DetectChanges
+  condition: or(eq(dependencies.DetectChanges.outputs['ParseCommitMessage.runAll'], 'true'), contains(dependencies.DetectChanges.outputs['ParseCommitMessage.changedModules'], 'iam'))
+  jobs:
+  - job: DeployIAM
+    steps:
+    - script: echo "Running IAM module deployment"
+      displayName: 'Deploy IAM Module'
+
+- stage: Compute
+  dependsOn: DetectChanges
+  condition: or(eq(dependencies.DetectChanges.outputs['ParseCommitMessage.runAll'], 'true'), contains(dependencies.DetectChanges.outputs['ParseCommitMessage.changedModules'], 'compute'))
+  jobs:
+  - job: DeployCompute
+    steps:
+    - script: echo "Running Compute module deployment"
+      displayName: 'Deploy Compute Module'
+
+- stage: Database
+  dependsOn: DetectChanges
+  condition: or(eq(dependencies.DetectChanges.outputs['ParseCommitMessage.runAll'], 'true'), contains(dependencies.DetectChanges.outputs['ParseCommitMessage.changedModules'], 'database'))
+  jobs:
+  - job: DeployDatabase
+    steps:
+    - script: echo "Running Database module deployment"
+      displayName: 'Deploy Database Module'
