@@ -1,0 +1,89 @@
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+
+pool:
+  name: mypool
+  demands:
+    - Agent.Name -equals saikat-agent
+
+stages:
+# ------------------ STAGE 1: Detect Changes ------------------
+- stage: DetectChanges
+  displayName: 'Detect Changed Terraform Modules'
+  jobs:
+  - job: GetChangedFiles
+    displayName: 'Determine Changed Modules'
+    steps:
+    - checkout: self
+
+    - script: |
+        COMMIT_MSG="$(Build.SourceVersionMessage)"
+        echo "Commit Message: $COMMIT_MSG"
+
+        IS_PROJECT_MSG_MATCH="false"
+        IS_IAM_MSG_MATCH="false"
+        IS_COMPUTE_MSG_MATCH="false"
+        IS_DATABASE_MSG_MATCH="false"
+
+        if echo "$COMMIT_MSG" | grep -iq "project"; then IS_PROJECT_MSG_MATCH="true"; fi
+        if echo "$COMMIT_MSG" | grep -iq "iam"; then IS_IAM_MSG_MATCH="true"; fi
+        if echo "$COMMIT_MSG" | grep -iq "compute"; then IS_COMPUTE_MSG_MATCH="true"; fi
+        if echo "$COMMIT_MSG" | grep -iq "database"; then IS_DATABASE_MSG_MATCH="true"; fi
+
+        echo "Project :: $IS_PROJECT_MSG_MATCH"
+        echo "IAM :: $IS_IAM_MSG_MATCH"
+
+        echo "##vso[task.setvariable variable=runProject;isOutput=true]$IS_PROJECT_MSG_MATCH"
+        echo "##vso[task.setvariable variable=runIam;isOutput=true]$IS_IAM_MSG_MATCH"
+        echo "##vso[task.setvariable variable=runCompute;isOutput=true]$IS_COMPUTE_MSG_MATCH"
+        echo "##vso[task.setvariable variable=runDatabase;isOutput=true]$IS_DATABASE_MSG_MATCH"
+      name: SetRunFlags
+
+# ------------------ STAGE 2: Project Module ------------------
+- stage: project
+  dependsOn: DetectChanges
+  condition: eq(dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.runProject'], 'true')
+  jobs:
+  - job: variabletest1
+    steps:
+    - script: |
+        echo "Running project stage because runProject is true"
+        echo "runProject: $(dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.runProject'])"
+      displayName: 'Verify Variable in Project Stage'
+
+  # - template: jobs/ado-publish-job.yml@templates
+  #   parameters:
+  #     targetPath: 'project'
+  #     artifactName: 'project'
+
+  # - template: jobs/terraform-plan.yml@templates
+  #   parameters:
+  #     environmentName: 'dev'
+  #     TF_TOKEN: $(TF_TOKEN)
+  #     terraformDirectory: 'project'
+
+# ------------------ STAGE 3: IAM Module ------------------
+- stage: iam
+  dependsOn: DetectChanges
+  condition: eq(dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.runIam'], 'true')
+  jobs:
+  - job: variabletest2
+    steps:
+    - script: |
+        echo "Running IAM stage because runIam is true"
+        echo "runIam: $(dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.runIam'])"
+      displayName: 'Verify Variable in IAM Stage'
+
+  # - template: jobs/ado-publish-job.yml@templates
+  #   parameters:
+  #     targetPath: 'iam'
+  #     artifactName: 'iam'
+
+  # - template: jobs/terraform-plan.yml@templates
+  #   parameters:
+  #     environmentName: 'dev'
+  #     TF_TOKEN: $(TF_TOKEN)
+  #     terraformDirectory: 'iam'
