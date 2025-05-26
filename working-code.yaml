@@ -20,40 +20,79 @@ stages:
     - checkout: self
 
     - script: |
-        COMMIT_MSG="$(Build.SourceVersionMessage)"
-        echo "Commit Message: $COMMIT_MSG"
-
-        IS_PROJECT_MSG_MATCH="false"
-        IS_IAM_MSG_MATCH="false"
-        IS_COMPUTE_MSG_MATCH="false"
-        IS_DATABASE_MSG_MATCH="false"
-
-        if echo "$COMMIT_MSG" | grep -iq "project"; then IS_PROJECT_MSG_MATCH="true"; fi
-        if echo "$COMMIT_MSG" | grep -iq "iam"; then IS_IAM_MSG_MATCH="true"; fi
-        if echo "$COMMIT_MSG" | grep -iq "compute"; then IS_COMPUTE_MSG_MATCH="true"; fi
-        if echo "$COMMIT_MSG" | grep -iq "database"; then IS_DATABASE_MSG_MATCH="true"; fi
-
-        echo "Project :: $IS_PROJECT_MSG_MATCH"
-        echo "IAM :: $IS_IAM_MSG_MATCH"
-
-        echo "##vso[task.setvariable variable=runProject;isOutput=true]$IS_PROJECT_MSG_MATCH"
-        echo "##vso[task.setvariable variable=runIam;isOutput=true]$IS_IAM_MSG_MATCH"
-        echo "##vso[task.setvariable variable=runCompute;isOutput=true]$IS_COMPUTE_MSG_MATCH"
-        echo "##vso[task.setvariable variable=runDatabase;isOutput=true]$IS_DATABASE_MSG_MATCH"
+        COMMIT_MESSAGE="$(Build.SourceVersionMessage)"
+        echo "Commit Message: $COMMIT_MESSAGE"
+        MESSAGE=$(echo "$COMMIT_MESSAGE" | tr '[:upper:]' '[:lower:]')
+        echo "Commit Message lower: $MESSAGE"
+        
+        # Check for "all" keyword to run everything
+        if [[ $MESSAGE == *"all"* ]]; then
+          echo "##vso[task.setvariable variable=runAll;isOutput=true]true"
+          echo "Running all modules as 'all' was detected in commit message"
+          exit 0
+        fi
+        
+        # Initialize module flags
+        PROJECT_CHANGED=false
+        IAM_CHANGED=false
+        COMPUTE_CHANGED=false
+        DATABASE_CHANGED=false
+        
+        # Check for each module
+        if [[ $MESSAGE == *"project"* ]]; then
+          PROJECT_CHANGED=true
+        fi
+        
+        if [[ $MESSAGE == *"iam"* ]]; then
+          IAM_CHANGED=true
+        fi
+        
+        if [[ $MESSAGE == *"compute"* ]]; then
+          COMPUTE_CHANGED=true
+        fi
+        
+        if [[ $MESSAGE == *"database"* ]]; then
+          DATABASE_CHANGED=true
+        fi
+        
+        # Build the changed modules string
+        CHANGED_MODULES=""
+        if $PROJECT_CHANGED; then
+          CHANGED_MODULES="${CHANGED_MODULES}project,"
+        fi
+        if $IAM_CHANGED; then
+          CHANGED_MODULES="${CHANGED_MODULES}iam,"
+        fi
+        if $COMPUTE_CHANGED; then
+          CHANGED_MODULES="${CHANGED_MODULES}compute,"
+        fi
+        if $DATABASE_CHANGED; then
+          CHANGED_MODULES="${CHANGED_MODULES}database,"
+        fi
+        
+        # Remove trailing comma if any
+        CHANGED_MODULES=${CHANGED_MODULES%,}
+        echo "Modules are:: $CHANGED_MODULES"
+        
+        if [ -z "$CHANGED_MODULES" ]; then
+          echo "No module changes detected in commit message. Running all modules."
+          echo "##vso[task.setvariable variable=runAll;isOutput=true]true"
+        else
+          echo "Changed modules: $CHANGED_MODULES"
+          echo "##vso[task.setvariable variable=changedModules;isOutput=true]$CHANGED_MODULES"
+        fi  
       name: SetRunFlags
 
 # ------------------ STAGE 2: Project Module ------------------
 - stage: project
   dependsOn: DetectChanges
-  condition: eq(dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.runProject'], 'true')
+  condition: or(eq(dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.runAll'], 'true'), contains(dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.changedModules'], 'project'))
+  # or(eq(dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.runAll'], 'true'), contains(dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.changedModules'], 'iam'))
   jobs:
-  - job: variabletest1
+  - job: DeployProject
     steps:
-    - script: |
-        echo "Running project stage because runProject is true"
-        echo "runProject: $(dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.runProject'])"
-      displayName: 'Verify Variable in Project Stage'
-
+    - script: echo "Running Project module deployment"
+      displayName: 'Deploy Project Module'
   # - template: jobs/ado-publish-job.yml@templates
   #   parameters:
   #     targetPath: 'project'
@@ -68,14 +107,12 @@ stages:
 # ------------------ STAGE 3: IAM Module ------------------
 - stage: iam
   dependsOn: DetectChanges
-  condition: eq(dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.runIam'], 'true')
+  condition: or(eq(dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.runAll'], 'true'), contains(dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.changedModules'], 'iam'))
   jobs:
-  - job: variabletest2
+  - job: DeployIAM
     steps:
-    - script: |
-        echo "Running IAM stage because runIam is true"
-        echo "runIam: $(dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.runIam'])"
-      displayName: 'Verify Variable in IAM Stage'
+    - script: echo "Running IAM module deployment"
+      displayName: 'Deploy IAM Module'
 
   # - template: jobs/ado-publish-job.yml@templates
   #   parameters:
@@ -87,3 +124,46 @@ stages:
   #     environmentName: 'dev'
   #     TF_TOKEN: $(TF_TOKEN)
   #     terraformDirectory: 'iam'
+
+# ------------------ STAGE 4: COMPUTE Module ------------------
+- stage: Compute
+  dependsOn: DetectChanges
+  condition: or(eq(dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.runAll'], 'true'), contains(dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.changedModules'], 'compute'))
+  jobs:
+  - job: DeployCompute
+    steps:
+    - script: echo "Running Compute module deployment"
+      displayName: 'Deploy Compute Module'
+
+  # - template: jobs/ado-publish-job.yml@templates
+  #   parameters:
+  #     targetPath: 'compute'
+  #     artifactName: 'compute'
+
+  # - template: jobs/terraform-plan.yml@templates
+  #   parameters:
+  #     environmentName: 'dev'
+  #     TF_TOKEN: $(TF_TOKEN)
+  #     terraformDirectory: 'compute'
+
+
+# ------------------ STAGE 5: Databse Module ------------------
+- stage: Database
+  dependsOn: DetectChanges
+  condition: or(eq(dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.runAll'], 'true'), contains(dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.changedModules'], 'database'))
+  jobs:
+  - job: DeployDatabse
+    steps:
+    - script: echo "Running Database module deployment"
+      displayName: 'Deploy Database Module '
+
+  # - template: jobs/ado-publish-job.yml@templates
+  #   parameters:
+  #     targetPath: 'database'
+  #     artifactName: 'database'
+
+  # - template: jobs/terraform-plan.yml@templates
+  #   parameters:
+  #     environmentName: 'dev'
+  #     TF_TOKEN: $(TF_TOKEN)
+  #     terraformDirectory: 'database'
