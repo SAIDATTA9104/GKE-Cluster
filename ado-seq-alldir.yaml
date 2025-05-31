@@ -1,0 +1,154 @@
+trigger:
+  branches:
+    include:
+      - main
+      - alldir-pr
+
+pr:
+  branches:
+    include:
+      - develop
+
+pool:
+  name: mypool
+  demands:
+    - Agent.Name -equals saikat-agent
+
+stages:
+# ------------------ STAGE 1: Detect Changes ------------------
+- stage: DetectChanges
+  displayName: 'Detect Changed Modules'
+  jobs:
+  - job: GetChangedFiles
+    displayName: 'Determine Changed Modules'
+    steps:
+    - checkout: self
+      fetchDepth: 0  # Required to get full commit history for PR changes
+
+    - bash: |
+        # Initialize module flags
+        PROJECT_CHANGED=false
+        IAM_CHANGED=false
+        COMPUTE_CHANGED=false
+        NETWORK_CHANGED=false
+        DATABASE_CHANGED=false
+        
+        # Get changed files - using predefined Azure DevOps variables
+        if [ "$(Build.Reason)" = "PullRequest" ]; then
+          # PR trigger - use the predefined target branch
+          echo "PR detected, comparing with target branch: $(System.PullRequest.TargetBranch)"
+          CHANGED_FILES=$(git diff --name-only remotes/origin/$(System.PullRequest.TargetBranch)...HEAD)
+        else
+          # Direct push to branch
+          echo "Direct push detected, comparing with previous commit"
+          CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
+        fi
+        
+        echo "Changed files:"
+        echo "$CHANGED_FILES"
+        
+        # Check for changes in module directories
+        for file in $CHANGED_FILES; do
+          case $file in
+            project/*)
+              PROJECT_CHANGED=true
+              ;;
+            iam/*)
+              IAM_CHANGED=true
+              ;;
+            compute/*)
+              COMPUTE_CHANGED=true
+              ;;
+            network/*)
+              NETWORK_CHANGED=true
+              ;;
+            database/*)
+              DATABASE_CHANGED=true
+              ;;
+          esac
+        done
+        
+        # Build the changed modules string
+        CHANGED_MODULES=""
+        if $PROJECT_CHANGED; then
+          CHANGED_MODULES="${CHANGED_MODULES}project,"
+        fi
+        if $IAM_CHANGED; then
+          CHANGED_MODULES="${CHANGED_MODULES}iam,"
+        fi
+        if $COMPUTE_CHANGED; then
+          CHANGED_MODULES="${CHANGED_MODULES}compute,"
+        fi
+        if $NETWORK_CHANGED; then
+          CHANGED_MODULES="${CHANGED_MODULES}network,"
+        fi
+        if $DATABASE_CHANGED; then
+          CHANGED_MODULES="${CHANGED_MODULES}database,"
+        fi
+        
+        # Remove trailing comma if any
+        CHANGED_MODULES=${CHANGED_MODULES%,}
+        
+        if [ -z "$CHANGED_MODULES" ]; then
+          echo "##vso[task.logissue type=error]No module changes detected. Please modify files within one of these directories: project/, iam/, compute/, network/, database/"
+          echo "##vso[task.complete result=Failed;]"
+          exit 1
+        else
+          echo "The following modules will be deployed: $CHANGED_MODULES"
+          echo "##vso[task.setvariable variable=changedModules;isOutput=true]$CHANGED_MODULES"
+        fi
+      name: SetRunFlags
+
+# ------------------ MODULE DEPLOYMENT STAGES ------------------
+- stage: project
+  dependsOn: DetectChanges
+  condition: contains(dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.changedModules'], 'project')
+  jobs:
+  - job: DeployProject
+    steps:
+    - script: echo "Running Project module deployment"
+      displayName: 'Deploy Project Module'
+
+- stage: iam
+  dependsOn: project
+  # condition: contains(dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.changedModules'], 'iam')
+  condition: and( always(),
+    contains(dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.changedModules'], 'iam'))
+
+  jobs:
+  - job: DeployIAM
+    steps:
+    - script: echo "Running IAM module deployment"
+      displayName: 'Deploy IAM Module'
+
+- stage: Network
+  dependsOn: iam
+  condition: and( always(),
+    contains(dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.changedModules'], 'network'))
+  jobs:
+  - job: DeployNetwork
+    steps:
+    - script: echo "Running Network module deployment"
+      displayName: 'Deploy Network Module'
+
+- stage: Compute
+  dependsOn: Network
+  condition: and( always(),
+    contains(dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.changedModules'], 'compute'))
+
+  jobs:
+  - job: DeployCompute
+    steps:
+    - script: echo "Running Compute module deployment"
+      displayName: 'Deploy Compute Module'
+
+
+- stage: Database
+  dependsOn: Compute
+  condition: and( always(),
+    contains(dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.changedModules'], 'database'))
+  jobs:
+  - job: DeployDatabase
+    steps:
+    - script: echo "Running Database module deployment"
+      displayName: 'Deploy Database Module' 
