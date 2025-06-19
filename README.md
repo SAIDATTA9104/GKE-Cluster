@@ -1,81 +1,100 @@
-# Module Deployment Pipeline
+# Azure DevOps Pipeline
 
-This Azure DevOps pipeline is designed to selectively deploy infrastructure modules based on changes detected in pull requests or commit messages.
+## Overview
 
-## Pipeline Overview
+This Azure DevOps pipeline automates selective deployment of modules based on keywords detected in the commit message. It triggers on commits to the `main` and `develop` branches and determines which modules to deploy by parsing the commit message for specific keywords.
 
-The pipeline consists of two main phases:
-1. **Change Detection**: Determines which modules need to be deployed based on pull requests or commit messages.
-2. **Module Deployment**: Executes deployments for the identified modules. Modules are Project, IAM, Compute and Database.
+If no module keywords are found or if the keyword `all` is present, the pipeline deploys all modules.
 
-## Supported Modules
+---
 
-- **Project**
-- **IAM**
-- **Compute**
-- **Database**
+## Trigger
 
-## Trigger Conditions
+- Branches:
+  - `main`
+  - `develop`
 
-The pipeline triggers on:
-- Pushes to the branches
-- Pull requests targeting the branch
+---
 
-## How to Control Module Execution
+## Variables
 
-### Option 1: Via PR Title or Commit Message
-Include one of these keywords in your PR title or commit message:
-- `all` - Deploys all modules
-- `project` - Deploys only the Project module
-- `iam` - Deploys only the IAM module
-- `compute` - Deploys only the Compute module
-- `database` - Deploys only the Database module
+| Variable       | Description                                        | Default Value |
+|----------------|--------------------------------------------------|---------------|
+| `changedModules` | Comma-separated list of modules detected as changed | `''`          |
+| `runAll`       | Flag to indicate if all modules should be deployed | `false`       |
 
-### Option 2: Automatic Detection
-If no module is specified in the PR title or commit message, the pipeline will:
-1. Check for changed files in module directories
-2. If no changes are detected, the pipeline will fail with a message asking you to specify modules
+---
 
 ## Pipeline Stages
 
-### 1. DetectChanges Stage
-- Determines which modules need deployment
-- Checks both PR titles and commit messages for module keywords
-- Outputs either `runAll` flag or `changedModules` list
+### 1. DetectChanges
 
-### 2. Module Deployment Stages
-Each module stage runs only if:
-- The `runAll` flag is true, OR
-- The module name appears in the `changedModules` list
+- **Purpose:** Parses the commit message to detect which modules have changed.
+- **Details:**
+  - Converts the commit message to lowercase.
+  - Checks for the keyword `all` to trigger deployment of all modules.
+  - Detects changes for the following modules based on commit message keywords:
+    - `project`
+    - `iam`
+    - `compute`
+    - `database`
+  - Sets the pipeline variables `changedModules` or `runAll` accordingly.
 
-Available deployment stages:
-- `project`
-- `iam`
-- `compute`
-- `database`
+### 2. Project
 
-## Example Usage
+- **Depends on:** DetectChanges
+- **Condition:** Runs if `runAll` is `true` or if `project` is in `changedModules`.
+- **Job:** Deploys the Project module.
 
-### Deploy all modules:
-PR Title: `[ALL] Major infrastructure update`
+### 3. IAM
 
-### Deploy specific modules:
-PR Title: `Update IAM policies and Compute configurations`
+- **Depends on:** DetectChanges
+- **Condition:** Runs if `runAll` is `true` or if `iam` is in `changedModules`.
+- **Job:** Deploys the IAM module.
 
-### Deploy based on file changes:
-PR Title: `Compute module changes` (with changes in `compute/` directory)
+### 4. Compute
 
-## Failure Conditions
-The pipeline will fail if:
-- No module keywords are detected in PR title/commit message
-- No relevant file changes are detected
-- The required module name isn't specified
+- **Depends on:** DetectChanges
+- **Condition:** Runs if `runAll` is `true` or if `compute` is in `changedModules`.
+- **Job:** Deploys the Compute module.
 
+### 5. Database
 
+- **Depends on:** DetectChanges
+- **Condition:** Runs if `runAll` is `true` or if `database` is in `changedModules`.
+- **Job:** Deploys the Database module.
 
+---
 
-## Notes
+## Commit Message Guidelines
 
-- Module names in PR titles/commit messages are case-insensitive
-- The pipeline is designed to work with Terraform modules (commented templates are available)
-- Uncomment and customize the template sections for your specific deployment needs
+Include one or more of the following keywords in your commit message to specify which modules to deploy:
+
+- `all` — Deploy all modules.
+- `project` — Deploy the Project module.
+- `iam` — Deploy the IAM module.
+- `compute` — Deploy the Compute module.
+- `database` — Deploy the Database module.
+
+If none of these keywords are present, the pipeline defaults to deploying all modules.
+
+---
+
+## Examples
+
+- `Fix bug in project and iam modules`  
+  Deploys **Project** and **IAM** modules only.
+
+- `Update compute configuration`  
+  Deploys **Compute** module only.
+
+- `Full system update - all modules`  
+  Deploys **all** modules.
+
+---
+
+## Summary
+
+This pipeline optimizes deployment by selectively running module deployments based on commit message content, reducing unnecessary work and speeding up delivery.
+
+---
