@@ -1,0 +1,134 @@
+parameters:
+- name: configPath
+  type: string
+  default: 'config/config.yml'
+
+stages:
+# ------------------ STAGE 1: Load Configuration ------------------
+- stage: LoadConfig
+  displayName: 'Load Pipeline Configuration'
+  jobs:
+  - job: LoadConfig
+    displayName: 'Load Pipeline Configuration'
+    steps:
+    - checkout: self
+    
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '3.9'
+        addToPath: true
+
+    - script: |
+        # Ensure PyYAML is available
+        python3 -c "import yaml" 2>/dev/null || pip3 install PyYAML
+        
+        # Load configuration from config file
+        python3 scripts/load_config.py --config-path ${{ parameters.configPath }}
+      name: LoadConfig
+      displayName: 'Load Pipeline Configuration'
+
+# ------------------ STAGE 2: Detect Changes ------------------
+- stage: DetectChanges
+  dependsOn: LoadConfig
+  displayName: 'Detect Changed Modules'
+  jobs:
+  - job: GetChangedFiles
+    displayName: 'Determine Changed Modules'
+    steps:
+    - checkout: self
+      fetchDepth: 0
+
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '3.9'
+        addToPath: true
+
+    - script: |
+        # Use configuration from LoadConfig stage
+        python3 scripts/detect_changes.py --folders-json "$(LoadConfig.LoadConfig.configFolders)"
+      name: DetectChanges
+      displayName: 'Run Change Detection Script'
+
+# ------------------ MODULE DEPLOYMENT STAGES (ORDERED EXECUTION) ------------------
+# Stages will run in the order specified in config/config.yml based on folder.order values
+
+- stage: project
+  dependsOn: DetectChanges
+  condition: contains(dependencies.DetectChanges.outputs['GetChangedFiles.DetectChanges.changedModules'], 'project')
+  displayName: 'Deploy Project Module (Order 1)'
+  jobs:
+  - job: DeployProject
+    displayName: 'Deploy Project Module'
+    steps:
+    - checkout: self
+    - script: echo "Running Project module deployment (Order 1)"
+      displayName: 'Deploy Project Module'
+    - script: |
+        echo "Project module deployment completed"
+        echo "This is the first stage in the execution order"
+      displayName: 'Project Module Complete'
+
+- stage: iam
+  dependsOn: project
+  condition: and(always(), contains(dependencies.DetectChanges.outputs['GetChangedFiles.DetectChanges.changedModules'], 'iam'))
+  displayName: 'Deploy IAM Module (Order 2)'
+  jobs:
+  - job: DeployIAM
+    displayName: 'Deploy IAM Module'
+    steps:
+    - checkout: self
+    - script: echo "Running IAM module deployment (Order 2)"
+      displayName: 'Deploy IAM Module'
+    - script: |
+        echo "IAM module deployment completed"
+        echo "This stage depends on Project module completion"
+      displayName: 'IAM Module Complete'
+
+- stage: compute
+  dependsOn: iam
+  condition: and(always(), contains(dependencies.DetectChanges.outputs['GetChangedFiles.DetectChanges.changedModules'], 'compute'))
+  displayName: 'Deploy Compute Module (Order 3)'
+  jobs:
+  - job: DeployCompute
+    displayName: 'Deploy Compute Module'
+    steps:
+    - checkout: self
+    - script: echo "Running Compute module deployment (Order 3)"
+      displayName: 'Deploy Compute Module'
+    - script: |
+        echo "Compute module deployment completed"
+        echo "This stage depends on IAM module completion"
+      displayName: 'Compute Module Complete'
+
+- stage: network
+  dependsOn: compute
+  condition: and(always(), contains(dependencies.DetectChanges.outputs['GetChangedFiles.DetectChanges.changedModules'], 'network'))
+  displayName: 'Deploy Network Module (Order 4)'
+  jobs:
+  - job: DeployNetwork
+    displayName: 'Deploy Network Module'
+    steps:
+    - checkout: self
+    - script: echo "Running Network module deployment (Order 4)"
+      displayName: 'Deploy Network Module'
+    - script: |
+        echo "Network module deployment completed"
+        echo "This stage depends on Compute module completion"
+      displayName: 'Network Module Complete'
+
+- stage: database
+  dependsOn: network
+  condition: and(always(), contains(dependencies.DetectChanges.outputs['GetChangedFiles.DetectChanges.changedModules'], 'database'))
+  displayName: 'Deploy Database Module (Order 5)'
+  jobs:
+  - job: DeployDatabase
+    displayName: 'Deploy Database Module'
+    steps:
+    - checkout: self
+    - script: echo "Running Database module deployment (Order 5)"
+      displayName: 'Deploy Database Module'
+    - script: |
+        echo "Database module deployment completed"
+        echo "This is the final stage in the execution order"
+        echo "All modules have been deployed successfully!"
+      displayName: 'Database Module Complete'

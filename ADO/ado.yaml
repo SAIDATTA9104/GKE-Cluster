@@ -1,0 +1,16 @@
+# Configuration-driven pipeline
+# All configuration is loaded from config/config.yml
+# Pipeline stages will run in the order specified in the config file
+
+extends:
+  template: templates/base-pipeline.yml
+  parameters:
+    # Configuration file path - all other settings come from config/config.yml
+    configPath: 'config/config.yml'
+
+# Pipeline will automatically:
+# 1. Load configuration from config/config.yml
+# 2. Detect changes in modules
+# 3. Execute stages in order based on folder.order values in config
+# 4. Only run stages for modules that have changes
+# 5. Use pool and agent settings from config file

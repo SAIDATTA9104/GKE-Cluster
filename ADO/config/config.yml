@@ -1,0 +1,53 @@
+# Centralized configuration for Azure DevOps pipeline
+# This file contains all folder definitions and pipeline settings
+
+# Folder configurations
+folders:
+  - name: 'project'
+    path: 'project/*'
+    displayName: 'Project Module'
+    description: 'Core project configuration and setup'
+    order: 1
+    
+  - name: 'iam'
+    path: 'iam/*'
+    displayName: 'IAM Module'
+    description: 'Identity and Access Management'
+    order: 2
+    
+  - name: 'compute'
+    path: 'compute/*'
+    displayName: 'Compute Module'
+    description: 'Compute resources and instances'
+    order: 3
+    
+  - name: 'network'
+    path: 'network/*'
+    displayName: 'Network Module'
+    description: 'Networking and connectivity'
+    order: 4
+    
+  - name: 'database'
+    path: 'database/*'
+    displayName: 'Database Module'
+    description: 'Database and storage resources'
+    order: 5
+
+# Pipeline behavior settings
+pipeline:
+  branches:
+    include:
+      - main
+      - develop
+  
+  prBranches:
+    include:
+      - develop
+  
+  pool:
+    name: 'mypool'
+    agentDemand: 'ubuntu-wsl'
+  
+  python:
+    version: '3.9'
+    script: 'scripts/detect_changes.py'
