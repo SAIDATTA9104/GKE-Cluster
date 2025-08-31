@@ -1,0 +1,24 @@
+# Centralized configuration for Azure DevOps pipeline
+# This file contains all folder definitions and pipeline settings
+
+# Folder configurations  
+modules:
+  - name: project
+    path: project/
+  - name: iam
+    path: iam/
+  - name: compute
+    path: compute/
+  - name: network
+    path: network/
+  - name: database
+    path: database/
+  - name: bigquery
+    path: bigquery/
+
+## This is optional, if we wish to ignore any changed module then we can skip
+# Ignore_Paths:
+#   - compute/
+  
+# This is for our own reference, This is never used.
+execution_order: [project, iam, compute, network, database]

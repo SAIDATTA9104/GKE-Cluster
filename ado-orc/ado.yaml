@@ -1,0 +1,63 @@
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+      - ado-base
+
+pool:
+  name: mypool
+  demands:
+    - Agent.Name -equals ubuntu-wsl
+
+stages:
+# ------------------ STAGE 1: Detect Changes ------------------
+- stage: DetectChanges
+  displayName: 'Detect Changed Modules'
+  jobs:
+  - job: GetChangedFiles
+    displayName: 'Determine Changed Modules'
+    steps:
+    - checkout: self
+      fetchDepth: 0  # Required to get full commit history for PR changes
+    - script: python3 scripts/detect_changes.py ./config/config.yml
+      displayName: 'Run Detect Changes Script'
+      name: SetRunFlags
+
+# ------------------ MODULE STAGES -------------------
+# Stages should be arranged in proper order. execution_order: [project, iam, compute, network, database]
+- template: templates/module-stage.yml
+  parameters:
+    moduleName: 'project'
+    dependsOn: DetectChanges
+    changedModulesRef: dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.changedModules']
+
+- template: templates/module-stage.yml
+  parameters:
+    moduleName: 'iam'
+    dependsOn: project
+    changedModulesRef: dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.changedModules']
+
+- template: templates/module-stage.yml
+  parameters:
+    moduleName: 'network'
+    dependsOn: iam
+    changedModulesRef: dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.changedModules']
+
+- template: templates/module-stage.yml
+  parameters:
+    moduleName: 'compute'
+    dependsOn: network
+    changedModulesRef: dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.changedModules']
+
+- template: templates/module-stage.yml
+  parameters:
+    moduleName: 'database'
+    dependsOn: compute
+    changedModulesRef: dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.changedModules']
+  
+- template: templates/module-stage.yml
+  parameters:
+    moduleName: 'bigquery'
+    dependsOn: database
+    changedModulesRef: dependencies.DetectChanges.outputs['GetChangedFiles.SetRunFlags.changedModules']
