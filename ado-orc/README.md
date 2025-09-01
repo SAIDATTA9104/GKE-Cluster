@@ -10,19 +10,19 @@
 
 ## Features
 
-- **Centralized Configuration:** All modules, execution order, and ignore paths are managed in `config/config.yml`.
+- **Centralized Configuration:** All modules where file changes are being tracked and ignore paths are managed in `config/config.yml`.
 - **Automated Change Detection:** Only modules with detected changes are triggered for deployment.
 - **Configurable Execution Order:** Modules run in the order specified in the config file.
 - **Ignore Paths:** Exclude files or folders from triggering deployments.
 - **Extensible:** Easily add new modules with minimal changes.
-- **Cross-Repo Template Support:** Reference pipeline templates from other Azure DevOps repositories.
+- **Cross-Repo Template Support:** Reference pipeline templates from other Azure DevOps repositories (Infra repo).
 
 ---
 
 ## Directory Structure
 
 ```
-Monika-madam-task/
+app2-project-task/
 ├── ado.yaml                  # Main Azure DevOps pipeline definition
 ├── config/
 │   └── config.yml            # Central architecture diagram
@@ -38,7 +38,7 @@ Monika-madam-task/
 
 ## Configuration
 
-All pipeline modules and settings are defined in `config/config.yml`:
+All pipeline modules and settings are defined in `config/config.yml`. `Ignore_Paths` is also optional.:
 
 ```yaml
 modules:
@@ -47,13 +47,6 @@ modules:
   - name: iam
     path: iam/
   # Add more modules as needed
-
-order:
-  - project
-  - iam
-  - network
-  - compute
-  - database
 
 Ignore_Paths:
   - bigquery/
@@ -96,7 +89,7 @@ Ignore_Paths:
 
 - The pipeline is triggered on changes to specified branches.
 - `scripts/detect_changes.py` identifies changed modules using `config/config.yml` and ignores paths listed in `Ignore_Paths`.
-- Only changed modules are deployed, in the order specified by `order`. `order` is for our own references, It never used in the code.
+- Only changed modules are deployed, in the order specified by `order` decided in the pipeline execution condition. `order` in config.yml is for our own references, It never used in the code.
 
 ---
 

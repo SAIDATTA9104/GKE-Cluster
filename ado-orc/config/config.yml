@@ -21,4 +21,4 @@ modules:
 #   - compute/
   
 # This is for our own reference, This is never used.
-execution_order: [project, iam, compute, network, database]
+# execution_order: [project, iam, compute, network, database]
