@@ -1,0 +1,68 @@
+import oci
+import os
+import sys
+
+def authenticate_and_list_compartments():
+    """
+    Authenticates with OCI using a configuration file and lists all compartments.
+
+    Requires the OCI Python SDK to be installed and a valid
+    ~/.oci/config file to be present.
+
+    The configuration file should contain details like:
+    [DEFAULT]
+    user=ocid1.user.oc1..xxxxxx
+    fingerprint=xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx
+    key_file=/path/to/your/oci_api_key.pem
+    tenancy=ocid1.tenancy.oc1..xxxxxx
+    region=us-ashburn-1
+    """
+    print("Attempting to authenticate with OCI...")
+    
+    # Check if the OCI config file exists
+    config_path = os.path.expanduser('~/.oci/config')
+    if not os.path.exists(config_path):
+        print(f"Error: OCI config file not found at '{config_path}'.")
+        print("Please ensure you have configured the OCI CLI.")
+        return
+
+    try:
+        # Load the default configuration from the file.
+        # This will automatically use the credentials defined in the file.
+        config = oci.config.from_file(file_location=config_path)
+
+        # Create an IdentityClient to interact with the Identity service.
+        # This client is initialized with the loaded configuration.
+        identity_client = oci.identity.IdentityClient(config)
+
+        # Use the list_compartments method to get a list of all compartments.
+        # The 'compartment_id' is the tenancy OCID, which is automatically
+        # pulled from the configuration.
+        list_compartments_response = identity_client.list_compartments(
+            compartment_id=config["tenancy"],
+            compartment_id_in_subtree=True
+        )
+
+        # Check if the response was successful.
+        if list_compartments_response.status != 200:
+            print(f"Error: Failed to list compartments. Status code: {list_compartments_response.status}")
+            return
+            
+        print("Authentication successful!")
+        print("-" * 30)
+        print("Compartments in your tenancy:")
+        for compartment in list_compartments_response.data:
+            print(f"  - {compartment.name} (OCID: {compartment.id})")
+
+    except oci.exceptions.ConfigFileNotFound:
+        print("Error: OCI configuration file not found.")
+        print("Please ensure the file exists at the specified path and has the correct format.")
+    except oci.exceptions.MissingPrivateKeyPassphrase:
+        print("Error: The provided private key is passphrase protected.")
+        print("The SDK does not support passphrase-protected keys by default. Please use a key without a passphrase or manually load it with the passphrase.")
+    except Exception as e:
+        print(f"An unexpected error occurred during authentication: {e}")
+        print("Please check your configuration file and credentials.")
+
+if __name__ == "__main__":
+    authenticate_and_list_compartments()
