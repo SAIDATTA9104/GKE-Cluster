@@ -1,0 +1,30 @@
+parameters:
+  - name: modules
+    type: object
+    default: []
+  - name: environmentName
+    type: string
+    default: ''
+
+stages:
+- ${{ each module in parameters.modules }}:
+  - stage: ${{ module.name }}
+    displayName: "Deploy ${{ module.name }}"
+    ${{ if ne(module.dependsOn, '') }}:
+      dependsOn: ${{ module.dependsOn }}
+    jobs:
+      - job: Deploy_${{ module.name }}
+        displayName: "Deploy ${{ module.name }}"
+        steps:
+          - checkout: self
+
+          - template: jobs/ado-publish-job.yml@templates
+            parameters:
+              targetPath: ${{ module.name }}
+              artifactName: ${{ module.name }}
+
+          - template: jobs/terraform-plan.yml@templates
+            parameters:
+              environmentName: ${{ parameters.environmentName }}
+              TF_TOKEN: ${{ parameters.TF_TOKEN }}
+              terraformDirectory: ${{ module.name }}

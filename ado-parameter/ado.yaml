@@ -1,0 +1,33 @@
+trigger: none
+pr: none
+
+variables:
+- group: 'ccoe-non-prod'
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: ccoe/tf-rxo-ccoe-infra
+      ref: main #Triggering template from infra repo
+
+extends:
+  template: templates/base-pipeline.yml
+  parameters:
+    modules:
+    # Order: project -> iam -> network -> compute -> database -> bigquery
+    - name: 'project'
+      dependsOn: '' # First stage depends on DetectChanges (set in template)
+    
+    - name: 'iam'
+      dependsOn: 'project'
+    
+    - name: 'network'
+      dependsOn: 'iam'
+    
+    - name: 'compute'
+      dependsOn: 'network'
+
+    - name: 'database'
+      dependsOn: 'compute'
+    environmentName: 'dev'
