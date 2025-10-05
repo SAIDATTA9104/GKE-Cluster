@@ -14,6 +14,15 @@ variable "artifact_repo_name" {
   description = "The name for the Artifact Registry repository."
   default     = "oci-report-repo"
 }
+------------
+# Backend configuration to store state in a GCS bucket
+terraform {
+  backend "gcs" {
+    bucket = "your-unique-tfstate-bucket-name" # <-- CHANGE THIS
+    prefix = "terraform/state/artifact-registry"
+  }
+}
+
 
 ---------------
 # Create the Artifact Registry Docker repository
@@ -209,6 +218,16 @@ resource "google_cloud_scheduler_job" "job_scheduler" {
     }
   }
 }
+
+-------------
+# Backend configuration for this state file
+terraform {
+  backend "gcs" {
+    bucket = "your-unique-tfstate-bucket-name" # <-- CHANGE THIS to the same bucket
+    prefix = "terraform/state/cloud-run-job"
+  }
+}
+
 ------
 ADO.yaml
 ---
@@ -314,4 +333,5 @@ stages:
           -var="gcp_project_id=$(gcpProjectID)"
           -var="gcp_region=$(gcpRegion)"
           -var="image_url=$(imageRepository):$(imageTag)"
+
 
