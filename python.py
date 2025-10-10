@@ -1,155 +1,198 @@
 import oci
-from google.cloud import secretmanager
+from google.cloud import secretmanager, storage
 import json
 import os
 import gzip
 import shutil
-from datetime import datetime
-from typing import Dict, Any
+from datetime import datetime, timedelta, date 
+from typing import Dict, Any, Optional
 import configparser
-from io import StringIO
+import logging
+import sys 
 
-# --- GCP SECRET CONFIGURATION (REQUIRED: REPLACE PLACEHOLDERS) ---
+# --- CONFIGURATION ---
 
 # Your Google Cloud Project ID where the secrets are stored
-GCP_PROJECT_ID = "your-gcp-project-id"
+GCP_PROJECT_ID = 
 
-# 1. SECRET ID holding the OCI Configuration FILE content (INI text)
-# Example Secret Content: 
-# [DEFAULT]
-# user=ocid1.user.oc1..aaaa...
-# fingerprint=a4:b3:c2:...
-# key_file=/path/to/key/file.pem  <-- Path will be replaced by the script
-# tenancy=ocid1.tenancy.oc1..bbbb...
-# region=us-ashburn-1
-GCP_CONFIG_SECRET_ID = "oci-config-ini-file-text"
+# OCI Secrets
+GCP_CONFIG_SECRET_ID = 
+GCP_KEY_SECRET_ID = 
+SECRET_VERSION_ID =
 
-# 2. SECRET ID holding the OCI API Private Key file content (PEM text)
-# Example Secret Content:
-# -----BEGIN RSA PRIVATE KEY-----...
-# -----END RSA PRIVATE KEY-----
-GCP_KEY_SECRET_ID = "oci-private-key-pem-text"
+# GCS Report Destination
+GCS_BUCKET_NAME = 
+# Folder to upload uncompressed CSVs to initially (staging area)
+GCS_STAGING_FOLDER = "oci-reports/daily-csv/" 
+# Folder to move the CSVs to after processing is complete (archive)
+GCS_PROCESSED_FOLDER = "oci-reports/processed/"
 
-# Usually 'latest', unless you need a specific pinned version
-SECRET_VERSION_ID = "latest"
-
-# -----------------------------------------------------------------
+# GCS Logging Configuration
+LOG_GCS_BUCKET = 
+LOG_GCS_FOLDER = 
+LOG_FILE_NAME = f"oci_download_report_{date.today().strftime('%Y%m%d')}.log"
+LOCAL_LOG_FILE_PATH = LOG_FILE_NAME 
 
 # Constants for temporary file names used during authentication
 TEMP_CONFIG_FILE_PATH = "oci_config_temp"
 TEMP_KEY_FILE_PATH = "oci_api_key_temp.pem"
 
+# Constants for local file paths
+DOWNLOAD_DIR = "downloaded_reports" 
+LOCAL_CSV_PATH = "local_path_csv" 
+
+# =================================================================
+#                         LOGGING INITIALIZATION
+# =================================================================
+
+def setup_logging():
+    """Initializes the logging system to output to a local file and console."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    file_handler = logging.FileHandler(LOCAL_LOG_FILE_PATH, mode='w')
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    
+    root_logger = logging.getLogger()
+    
+    # Avoid adding duplicate handlers if the script is re-run in the same session
+    if not any(isinstance(h, logging.FileHandler) for h in root_logger.handlers):
+        root_logger.addHandler(file_handler)
+        
+    logging.info(f"Logging initialized. Output going to console and local file: {LOCAL_LOG_FILE_PATH}")
+
+def print_to_log(*args, **kwargs):
+    """Redirects print statements to the logging system."""
+    logging.info(' '.join(map(str, args)))
+
+# Override the built-in print function
+_print = print
+print = print_to_log
+
+# =================================================================
+#                         HELPER FUNCTIONS
+# =================================================================
 
 def read_secret_text(project_id: str, secret_id: str, version_id: str) -> str:
-    """
-    Access the payload for the given secret version and return it as a raw string.
-    
-    Args:
-        project_id: Your Google Cloud project ID.
-        secret_id: The ID of the secret.
-        version_id: The version of the secret (e.g., 'latest').
-        
-    Returns:
-        The raw string content of the secret payload.
-    """
+    """Accesses the payload for the given secret version and returns it as a string."""
     client = secretmanager.SecretManagerServiceClient()
-    # Build the resource name.
     name = client.secret_version_path(project_id, secret_id, version_id)
-
     print(f"--- Accessing secret: {name} ---")
-
     try:
         response = client.access_secret_version(request={"name": name})
-        payload = response.payload.data.decode("UTF-8")
-        
-        print(f"✅ Successfully retrieved payload for secret ID: {secret_id}")
+        payload = response.payload.data.decode("UTF-8").strip() 
+        print(f"Successfully retrieved payload for secret ID: {secret_id}")
         return payload
-
     except Exception as e:
-        print(f"❌ ERROR: Failed to access secret '{secret_id}'.")
-        print(f"Details: {e}")
-        raise # Re-raise to halt script if GCP auth or secret access fails
+        logging.error(f"ERROR: Failed to access secret '{secret_id}'. Details: {e}")
+        raise 
 
-def create_oci_config_dict_from_ini(
-    ini_content: str, 
-    key_pem_content: str
-) -> Dict[str, str]:
-    """
-    Constructs and returns the OCI configuration dictionary required by the SDK.
-    It writes the key and config text to temporary files for OCI SDK to load.
-    
-    Returns:
-        A dictionary containing the OCI configuration data.
-    """
-    
+def create_oci_config_dict_from_ini(ini_content: str, key_pem_content: str) -> Dict[str, str]:
+    """Constructs the OCI configuration dictionary required by the SDK."""
     print(f"\n--- Preparing OCI Configuration ---")
-    
-    # 1. Write the private key content to a temporary file
     try:
         with open(TEMP_KEY_FILE_PATH, "w") as f:
             f.write(key_pem_content)
-        print(f"🔑 Successfully wrote OCI private key content to temporary file: {TEMP_KEY_FILE_PATH}")
+        print(f"Successfully wrote OCI private key to temporary file: {TEMP_KEY_FILE_PATH}")
     except IOError as e:
-        print(f"❌ ERROR: Could not write temporary key file: {e}")
+        logging.error(f"ERROR: Could not write temporary key file: {e}")
         raise
 
-    # 2. Parse the INI content to modify the key_file path
     config_parser = configparser.ConfigParser()
     config_parser.read_string(ini_content)
     print("📋 Parsed INI content from config secret.")
-
-    # Update the key_file path in the INI structure to point to the temporary file
+    
     if 'DEFAULT' in config_parser:
         absolute_key_path = os.path.abspath(TEMP_KEY_FILE_PATH)
         config_parser['DEFAULT']['key_file'] = absolute_key_path
-        print(f"🔄 Replaced 'key_file' path with absolute temporary path: {absolute_key_path}")
+        print(f"Replaced 'key_file' path with absolute temporary path: {absolute_key_path}")
     else:
-        print("⚠️ Warning: Could not find [DEFAULT] section in OCI config text. OCI SDK might fail.")
-        
-    # 3. Write the modified INI content to a temporary config file
+        print("Warning: Could not find [DEFAULT] section in OCI config text. OCI SDK might fail.")
+
     try:
         with open(TEMP_CONFIG_FILE_PATH, 'w') as f:
             config_parser.write(f)
         print(f"⚙️ Wrote final OCI config to temporary file: {TEMP_CONFIG_FILE_PATH}")
     except IOError as e:
-        print(f"❌ ERROR: Could not write temporary config file: {e}")
+        logging.error(f"ERROR: Could not write temporary config file: {e}")
         raise
 
-    # 4. Load the configuration dictionary using the OCI SDK utility
     config = oci.config.from_file(file_location=TEMP_CONFIG_FILE_PATH, profile_name="DEFAULT")
-    print("✅ OCI Configuration successfully loaded using oci.config.from_file.")
-    
+    print("OCI Configuration successfully loaded.")
     return config
 
-def fetch_oci_reports(oci_config: Dict[str, Any], destination_dir: str = "downloaded_reports"):
-    """
-    Connects to OCI Object Storage using the provided config to list and 
-    download the latest Cost Report.
-    """
+def decompress_gz_file(gz_path: str, destination_dir: str) -> Optional[str]:
+    """Decompresses a .gz file into the specified destination directory."""
+    if not gz_path.endswith(".gz"):
+        print(f"Skipping decompression for non-gz file: {os.path.basename(gz_path)}")
+        return gz_path
+        
+    filename_base = os.path.basename(gz_path)
+    uncompressed_filename = filename_base[:-3] 
+    uncompressed_path = os.path.join(destination_dir, uncompressed_filename)
+    
+    print(f"   Decompressing {filename_base}...")
+    try:
+        with gzip.open(gz_path, 'rb') as f_in:
+            with open(uncompressed_path, 'wb') as f_out:
+                shutil.copyfileobj(f_in, f_out)
+        print(f"   ----> Unzipped to: {uncompressed_filename}")
+        return uncompressed_path
+    except Exception as e:
+        logging.error(f"ERROR: Failed to decompress {gz_path}. Details: {e}")
+        return None
+
+def upload_to_gcs(local_file_path: str, bucket_name: str, folder_name: str, project_id: str):
+    """Uploads a file to a specific folder in a Google Cloud Storage bucket."""
+    if not os.path.exists(local_file_path):
+        print(f"GCS Upload Skipped: File not found at {local_file_path}")
+        return False
+        
+    storage_client = storage.Client(project=project_id)
+    bucket = storage_client.bucket(bucket_name)
+    filename = os.path.basename(local_file_path)
+    gcs_path = f"{folder_name.strip('/')}/{filename}" if folder_name else filename
+    blob = bucket.blob(gcs_path)
+    
+    try:
+        print(f"Starting upload of {filename} to gs://{bucket_name}/{gcs_path}...")
+        blob.upload_from_filename(local_file_path)
+        print(f"Successfully uploaded file to GCS.")
+        return True
+    except Exception as e:
+        logging.error(f"GCS Upload Failed for {filename} to bucket {bucket_name}. Details: {e}")
+        return False
+
+def fetch_oci_reports(oci_config: Dict[str, Any], download_dir: str, csv_dir: str):
+    """Connects to OCI Object Storage to download reports for the previous day."""
+    downloaded_count = 0
+    decompressed_count = 0
+    
+    yesterday_date = date.today() - timedelta(days=1)
+    print(f"\n--- Target Date for Report Download: {yesterday_date.strftime('%Y-%m-%d')} ---")
+    
     try:
         print(f"\n--- Connecting to OCI Object Storage ---")
-        
-        # Initialize the Object Storage Client with the loaded config
         object_storage_client = oci.object_storage.ObjectStorageClient(oci_config)
-        print("✅ Object Storage Client initialized.")
+        print("Object Storage Client initialized.")
 
-        # OCI Cost/Usage reports are stored in an Oracle-owned bucket
-        REPORT_NAMESPACE = "bling"
-        # The bucket name is automatically the Tenancy OCID
-        REPORT_BUCKET = oci_config['tenancy'] 
-        REPORT_PREFIX = "reports/cost-csv" 
+        # NOTE: These values are specific to the OCI tenancy's reporting setup
+        REPORT_NAMESPACE =
+        REPORT_BUCKET = 
+        REPORT_PREFIX = "" 
         
         print(f"Tenant OCID (Bucket Name): {REPORT_BUCKET}")
         print(f"Report Namespace: {REPORT_NAMESPACE}")
-        print(f"Report Prefix (Type): {REPORT_PREFIX}")
+        
+        for d in [download_dir, csv_dir]:
+            if not os.path.exists(d):
+                os.makedirs(d)
+                print(f"Created destination directory: {d}")
 
-        # Create destination directory
-        if not os.path.exists(destination_dir):
-            os.makedirs(destination_dir)
-            print(f"Created destination directory: {destination_dir}")
-
-        # List objects (reports) in the bucket
-        print(f"Listing objects in Object Storage bucket: {REPORT_BUCKET}...")
+        print(f"\nListing objects in Object Storage bucket: {REPORT_BUCKET}...")
         list_objects_response = oci.pagination.list_call_get_all_results(
             object_storage_client.list_objects,
             REPORT_NAMESPACE,
@@ -158,113 +201,172 @@ def fetch_oci_reports(oci_config: Dict[str, Any], destination_dir: str = "downlo
             fields='name,timeCreated'
         )
 
-        reports = list_objects_response.data.objects
-        print(f"📊 Found {len(reports)} cost reports.")
+        for o in list_objects_response.data.objects:
+            report_creation_date = o.time_created.date()
+            
+            # Filter for reports created on the previous day
+            if report_creation_date != yesterday_date:
+                continue 
+            
+            object_name = o.name
+            print(f"Found previous day's report: {object_name} (Created: {report_creation_date})")
+            
+            object_details = object_storage_client.get_object(
+                REPORT_NAMESPACE, REPORT_BUCKET, object_name
+            )
 
-        if not reports:
-            print("No cost reports found.")
-            return
+            filename = object_name.rsplit("/", 1)[-1]
+            gz_file_path = os.path.join(download_dir, filename)
+            
+            with open(gz_file_path, "wb") as f:
+                for chunk in object_details.data.raw.stream(1024 * 1024, decode_content=False):
+                    f.write(chunk)
+            
+            downloaded_count += 1
+            print(f"----> Downloaded to: {gz_file_path}")
 
-        # Sort reports by creation time (most recent first) and select the latest
-        latest_report = sorted(reports, key=lambda x: x.time_created, reverse=True)[0]
-        report_name = latest_report.name
+            uncompressed_path = decompress_gz_file(gz_file_path, csv_dir)
+            
+            if uncompressed_path and uncompressed_path != gz_file_path:
+                upload_to_gcs(
+                    uncompressed_path, 
+                    GCS_BUCKET_NAME, 
+                    GCS_STAGING_FOLDER,
+                    GCP_PROJECT_ID
+                )
+                decompressed_count += 1
+            
+        print(f"\n--- Summary ---")
+        print(f"Total reports found for {yesterday_date}: {downloaded_count}")
+        print(f"Total files decompressed and uploaded to staging: {decompressed_count}")
         
-        print(f"🎯 Selected latest report: {report_name} created at {latest_report.time_created}")
-
-        local_file_path_gz = os.path.join(destination_dir, os.path.basename(report_name))
-        local_file_path_csv = local_file_path_gz.replace(".gz", "")
-
-        print(f"Downloading report to: {local_file_path_gz}...")
-        
-        # Get the object (report file)
-        get_object_response = object_storage_client.get_object(
-            REPORT_NAMESPACE,
-            REPORT_BUCKET,
-            report_name
-        )
-
-        # Write the content to a compressed file
-        with open(local_file_path_gz, 'wb') as f:
-            for chunk in get_object_response.data.read(1024 * 1024):
-                f.write(chunk)
-        
-        print(f"✅ Download complete. File size: {os.path.getsize(local_file_path_gz) / (1024*1024):.2f} MB")
-
-        # Unzip the file
-        print(f"Unzipping report to: {local_file_path_csv}")
-        with gzip.open(local_file_path_gz, 'rb') as f_in:
-            with open(local_file_path_csv, 'wb') as f_out:
-                shutil.copyfileobj(f_in, f_out)
-        
-        print(f"✅ Report successfully unzipped and ready at: {local_file_path_csv}")
-        os.remove(local_file_path_gz)
-        print(f"Cleaned up compressed file: {local_file_path_gz}")
-
-
     except Exception as e:
-        print(f"❌ OCI Report fetching failed: {e}")
-        # Log the specific OCI SDK error and raise to be caught by main
+        logging.critical(f"OCI Report fetching failed critically: {e}", exc_info=True)
         raise 
 
-    finally:
-        print(f"\n--- Starting Temporary File Cleanup ---")
-        # Clean up the temporary key and config files
-        if os.path.exists(TEMP_KEY_FILE_PATH):
-            os.remove(TEMP_KEY_FILE_PATH)
-            print(f"✅ Cleaned up temporary key file: {TEMP_KEY_FILE_PATH}")
-        else:
-            print(f"ℹ️ Temporary key file not found for cleanup: {TEMP_KEY_FILE_PATH}")
-            
-        if os.path.exists(TEMP_CONFIG_FILE_PATH):
-            os.remove(TEMP_CONFIG_FILE_PATH)
-            print(f"✅ Cleaned up temporary config file: {TEMP_CONFIG_FILE_PATH}")
-        else:
-            print(f"ℹ️ Temporary config file not found for cleanup: {TEMP_CONFIG_FILE_PATH}")
+# =================================================================
+#                     GCS FILE MANAGEMENT (NEW)
+# =================================================================
 
+def move_staged_files_in_gcs(project_id: str, bucket_name: str, source_folder: str, destination_folder: str):
+    """
+    Moves all files from a source folder to a destination folder within the same GCS bucket.
+    """
+    print(f"\n--- Archiving staged files in GCS ---")
+    print(f"Source: gs://{bucket_name}/{source_folder}")
+    print(f"Destination: gs://{bucket_name}/{destination_folder}")
+    
+    storage_client = storage.Client(project=project_id)
+    bucket = storage_client.bucket(bucket_name)
+    
+    source_prefix = source_folder.strip('/') + '/'
+    dest_prefix = destination_folder.strip('/') + '/'
+    
+    blobs_to_move = list(bucket.list_blobs(prefix=source_prefix))
+
+    if not blobs_to_move:
+        print("No files found in the staging folder to move.")
+        return 0
+
+    print(f"Found {len(blobs_to_move)} files to move.")
+    moved_count = 0
+    try:
+        for source_blob in blobs_to_move:
+            if source_blob.name.endswith('/'): # Skip folder objects
+                continue
+
+            file_name = os.path.basename(source_blob.name)
+            destination_blob_name = f"{dest_prefix}{file_name}"
+            
+            print(f"Moving {source_blob.name} to {destination_blob_name}...")
+            
+            # 'rename_blob' is an atomic move operation
+            bucket.rename_blob(source_blob, new_name=destination_blob_name)
+            moved_count += 1
+            
+        print(f"Successfully moved {moved_count} files to the processed folder.")
+        return moved_count
+    except Exception as e:
+        logging.error(f"GCS file move operation FAILED. Details: {e}", exc_info=True)
+        raise
+
+def clean_up_local_directories(directories: list):
+    """Recursively removes the specified local directories."""
+    print("\n--- Cleaning up temporary local directories ---")
+    for d in directories:
+        if os.path.exists(d):
+            try:
+                shutil.rmtree(d)
+                print(f"Cleaned up temporary directory: {d}")
+            except OSError as e:
+                logging.warning(f"Warning: Could not remove directory {d}. Details: {e}")
+
+# =================================================================
+#                         MAIN EXECUTION
+# =================================================================
 
 def main():
     """
-    Main function to orchestrate fetching secrets and downloading the OCI report.
+    Main function to orchestrate the process of downloading OCI reports,
+    uploading them to a GCS staging area, and then moving them to a processed folder.
     """
-    print("=" * 60)
-    print("OCI REPORT DOWNLOAD SCRIPT (INI Text & Key from Separate Secrets)")
-    print("=" * 60)
+    setup_logging()
+    
+    logging.info("=" * 80)
+    logging.info("OCI REPORT DOWNLOAD AND GCS ARCHIVE SCRIPT STARTED")
+    logging.info("=" * 80)
     
     try:
-        # 1. Fetch OCI Configuration INI Text
-        oci_ini_content = read_secret_text(
-            GCP_PROJECT_ID, 
-            GCP_CONFIG_SECRET_ID, 
-            SECRET_VERSION_ID
-        )
-        print("✅ GCP OCI Config (INI) secret retrieval complete.")
-
-        # 2. Fetch OCI Private Key PEM Text
-        oci_key_pem_content = read_secret_text(
-            GCP_PROJECT_ID, 
-            GCP_KEY_SECRET_ID, 
-            SECRET_VERSION_ID
-        )
-        print("✅ GCP OCI Private Key (PEM) secret retrieval complete.")
-
-
-        # 3. Create OCI Config Dictionary from the text secrets
-        oci_config_data = create_oci_config_dict_from_ini(
-            oci_ini_content, 
-            oci_key_pem_content
-        )
-        print("✅ OCI Configuration preparation successful. Starting report download...")
-
-
-        # 4. Fetch OCI Reports using the retrieved configuration
-        fetch_oci_reports(oci_config_data)
+        # 1. OCI Configuration
+        oci_ini_content = read_secret_text(GCP_PROJECT_ID, GCP_CONFIG_SECRET_ID, SECRET_VERSION_ID)
+        oci_key_pem_content = read_secret_text(GCP_PROJECT_ID, GCP_KEY_SECRET_ID, SECRET_VERSION_ID)
+        oci_config_data = create_oci_config_dict_from_ini(oci_ini_content, oci_key_pem_content)
         
-        print("\n*** Script completed successfully! ***")
+        # 2. Fetch OCI Reports, Decompress, and Upload CSVs to GCS Staging
+        fetch_oci_reports(oci_config_data, DOWNLOAD_DIR, LOCAL_CSV_PATH)
+
+        # 3. Move files from GCS staging to processed folder
+        move_staged_files_in_gcs(
+            project_id=GCP_PROJECT_ID,
+            bucket_name=GCS_BUCKET_NAME,
+            source_folder=GCS_STAGING_FOLDER,
+            destination_folder=GCS_PROCESSED_FOLDER
+        )
+        
+        logging.info("\n*** Script completed successfully! All reports archived in GCS. ***")
 
     except Exception:
-        # The specific error was already printed in the called function
-        print("\n*** Script terminated due to previous errors. Please check the logs above. ***")
+        # This catches errors from any step (Secret Manager, OCI, GCS)
+        logging.critical("\n*** Script terminated due to a critical error. ***")
 
+    finally:
+        # 4. Cleanup temporary local authentication files
+        print("\n--- Cleanup Temporary Auth Files ---")
+        for temp_file in [TEMP_CONFIG_FILE_PATH, TEMP_KEY_FILE_PATH]:
+            if os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                    print(f"Cleaned up temporary file: {temp_file}")
+                except OSError as e:
+                    logging.warning(f"Warning: Could not remove file {temp_file}. Details: {e}")
+        
+        # 5. Cleanup local download and CSV directories
+        clean_up_local_directories([DOWNLOAD_DIR, LOCAL_CSV_PATH])
+        
+        # 6. Upload the final log file
+        if os.path.exists(LOCAL_LOG_FILE_PATH):
+            logging.info(f"\n--- Uploading final log file: {LOCAL_LOG_FILE_PATH} ---")
+            log_upload_status = upload_to_gcs(
+                LOCAL_LOG_FILE_PATH,
+                LOG_GCS_BUCKET,
+                LOG_GCS_FOLDER,
+                GCP_PROJECT_ID
+            )
+            if log_upload_status:
+                logging.info("Log file uploaded successfully. Removing local copy.")
+                os.remove(LOCAL_LOG_FILE_PATH)
+            else:
+                logging.error("Failed to upload log file to GCS.")
 
 if __name__ == "__main__":
     main()
