@@ -1,337 +1,96 @@
-variable "gcp_project_id" {
-  type        = string
-  description = "The GCP project ID."
-}
+trigger: 
+  branches:
+    include:
+      - alldir-yaml 
 
-variable "gcp_region" {
-  type        = string
-  description = "The GCP region for resources."
-  default     = "us-central1"
-}
-
-variable "artifact_repo_name" {
-  type        = string
-  description = "The name for the Artifact Registry repository."
-  default     = "oci-report-repo"
-}
-------------
-# Backend configuration to store state in a GCS bucket
-terraform {
-  backend "gcs" {
-    bucket = "your-unique-tfstate-bucket-name" # <-- CHANGE THIS
-    prefix = "terraform/state/artifact-registry"
-  }
-}
-
-
----------------
-# Create the Artifact Registry Docker repository
-resource "google_artifact_registry_repository" "repo" {
-  project       = var.gcp_project_id
-  location      = var.gcp_region
-  repository_id = var.artifact_repo_name
-  description   = "Docker repository for OCI reports"
-  format        = "DOCKER"
-}
-
-# Output the repository URL for use in the pipeline
-output "repository_url" {
-  description = "The fully qualified URL of the Artifact Registry repository."
-  value       = "${google_artifact_registry_repository.repo.location}-docker.pkg.dev/${google_artifact_registry_repository.repo.project}/${google_artifact_registry_repository.repo.name}"
-}
-
-
------------------
-
-terraform {
-  required_providers {
-    google = {
-      source  = "hashicorp/google"
-      version = ">= 4.50.0"
-    }
-  }
-}
-
-provider "google" {
-  project = var.gcp_project_id
-  region  = var.gcp_region
-}
-
---------------------
-
-variable "gcp_project_id" {
-  type        = string
-  description = "The GCP project ID."
-}
-
-variable "gcp_region" {
-  type        = string
-  description = "The GCP region for resources."
-  default     = "us-central1"
-}
-
-variable "image_url" {
-  type        = string
-  description = "The full URL of the Docker image to run."
-  sensitive   = true # Best practice to not log the image URL and tag
-}
-
-variable "job_name" {
-  type        = string
-  description = "The name for the Cloud Run Job."
-  default     = "daily-report-job"
-}
-
-variable "schedule_cron" {
-  type        = string
-  description = "Cron schedule for the job trigger."
-  default     = "0 0 * * *" # 12:00 AM Daily
-}
-
-variable "schedule_timezone" {
-  type        = string
-  description = "Timezone for the cron schedule."
-  default     = "Asia/Kolkata" # Set to India Standard Time
-}
-
-----------------
-
-# Create the Artifact Registry Docker repository
-resource "google_artifact_registry_repository" "repo" {
-  project       = var.gcp_project_id
-  location      = var.gcp_region
-  repository_id = var.artifact_repo_name
-  description   = "Docker repository for OCI reports"
-  format        = "DOCKER"
-}
-
-# Output the repository URL for use in the pipeline
-output "repository_url" {
-  description = "The fully qualified URL of the Artifact Registry repository."
-  value       = "${google_artifact_registry_repository.repo.location}-docker.pkg.dev/${google_artifact_registry_repository.repo.project}/${google_artifact_registry_repository.repo.name}"
-}
-
-
-------------------
-
-terraform {
-  required_providers {
-    google = {
-      source  = "hashicorp/google"
-      version = ">= 4.50.0"
-    }
-  }
-}
-
-provider "google" {
-  project = var.gcp_project_id
-  region  = var.gcp_region
-}
-
--------------------
-
-variable "gcp_project_id" {
-  type        = string
-  description = "The GCP project ID."
-}
-
-variable "gcp_region" {
-  type        = string
-  description = "The GCP region for resources."
-  default     = "us-central1"
-}
-
-variable "image_url" {
-  type        = string
-  description = "The full URL of the Docker image to run."
-  sensitive   = true # Best practice to not log the image URL and tag
-}
-
-variable "job_name" {
-  type        = string
-  description = "The name for the Cloud Run Job."
-  default     = "daily-report-job"
-}
-
-variable "schedule_cron" {
-  type        = string
-  description = "Cron schedule for the job trigger."
-  default     = "0 0 * * *" # 12:00 AM Daily
-}
-
-variable "schedule_timezone" {
-  type        = string
-  description = "Timezone for the cron schedule."
-  default     = "Asia/Kolkata" # Set to India Standard Time
-}
------------------
-
-# Create a dedicated service account for the Cloud Run Job to run as
-resource "google_service_account" "job_runner_sa" {
-  account_id   = "report-job-runner"
-  display_name = "Service Account for Report Job"
-}
-
-# Create the Cloud Run Job
-resource "google_cloud_run_v2_job" "report_job" {
-  name     = var.job_name
-  location = var.gcp_region
-
-  template {
-    template {
-      service_account = google_service_account.job_runner_sa.email
-      containers {
-        image = var.image_url
-      }
-    }
-  }
-}
-
-# Create a service account for the Cloud Scheduler to use
-resource "google_service_account" "scheduler_invoker_sa" {
-  account_id   = "scheduler-job-invoker"
-  display_name = "Service Account for Cloud Scheduler"
-}
-
-# Grant the scheduler's service account permission to run the Cloud Run Job
-resource "google_cloud_run_v2_job_iam_member" "job_invoker_binding" {
-  project  = google_cloud_run_v2_job.report_job.project
-  location = google_cloud_run_v2_job.report_job.location
-  name     = google_cloud_run_v2_job.report_job.name
-  role     = "roles/run.invoker"
-  member   = "serviceAccount:${google_service_account.scheduler_invoker_sa.email}"
-}
-
-# Create the Cloud Scheduler Job to run at the specified schedule
-resource "google_cloud_scheduler_job" "job_scheduler" {
-  name        = "trigger-${var.job_name}"
-  description = "Triggers the ${var.job_name} Cloud Run Job"
-  schedule    = var.schedule_cron
-  time_zone   = var.schedule_timezone
-
-  http_target {
-    uri = "https://${var.gcp_region}-run.googleapis.com/v1/${google_cloud_run_v2_job.report_job.name}:run"
-    http_method = "POST"
-    
-    oidc_token {
-      service_account_email = google_service_account.scheduler_invoker_sa.email
-    }
-  }
-}
-
--------------
-# Backend configuration for this state file
-terraform {
-  backend "gcs" {
-    bucket = "your-unique-tfstate-bucket-name" # <-- CHANGE THIS to the same bucket
-    prefix = "terraform/state/cloud-run-job"
-  }
-}
-
-------
-ADO.yaml
----
-trigger:
-- main # Trigger the pipeline on commits to the main branch
+# parameters:
+# - name: templateDirectory
+#   type: string 
+#   default: 'iam'  
 
 variables:
-  # --- PROJECT CONFIGURATION - UPDATE THESE VALUES ---
-  gcpServiceConnection: 'gcp-service-connection'           # GCP Service connection for Terraform
-  dockerRegistryServiceConnection: 'gcp-artifact-registry-connection' # Docker Registry service connection
-  gcpProjectID: 'your-gcp-project-id'                  # Your GCP Project ID
-  gcpRegion: 'us-central1'
-  terraformStateBucket: 'your-unique-tfstate-bucket-name'  # GCS bucket for Terraform state
-  
-  # --- REPOSITORY & IMAGE CONFIGURATION ---
-  artifactRepositoryName: 'oci-report-repo'
-  imageName: 'daily-report'
-  imageTag: '$(Build.BuildId)'
+- group: 'ccoe-non-prod'
 
-  # --- DERIVED VARIABLES ---
-  # The full repository path for Docker
-  imageRepository: '$(gcpRegion)-docker.pkg.dev/$(gcpProjectID)/$(artifactRepositoryName)/$(imageName)'
+variables:
+  - group: 'ccoe-non-prod'
+  # --- INFRASTRUCTURE & DEPLOYMENT VARIABLES ---
+  - name: gcpServiceConnection
+    value: '<GCP_SERVICE_CONNECTION_NAME>' # Replace with your GCP Service Connection name
+  - name: gcpProjectId
+    value: <>
+  - name: gcpRegion
+    value: 'us-central1'
+  - name: artifactRepoId
+    value: 'oci-report-repo'
+  - name: dockerImageName
+    value: 'oci-report-image'
+  - name: imageTag
+    value: '$(Build.BuildId)' # Use a unique build ID as the image tag
+  - name: sourceDir
+    value: '$(System.DefaultWorkingDirectory)/src'
+  - name: tfWorkingDir
+    value: '$(System.DefaultWorkingDirectory)/iac'
+  - name: scheduleCron
+    value: '0 0 * * *' # Midnight UTC
 
-pool:
-  vmImage: 'ubuntu-latest'
+  # --- RUNTIME CONFIGURATION VARIABLES (Passed to Python Script) ---
+  - name: ENV_GCP_PROJECT_ID
+    value: '$(gcpProjectId)'
+  - name: ENV_BIGQUERY_DATASET_ID
+    value: 'oci_prod_dataset'
+  - name: ENV_BIGQUERY_TABLE_NAME
+    value: 'daily_cost'
+  - name: ENV_GCS_REPORT_BUCKET_NAME
+    value: 'oci-cost-reports-bucket'
+  - name: ENV_GCS_STAGING_FOLDER
+    value: 'staged-reports/'
+  - name: ENV_GCP_OCI_CONFIG_SECRET_ID
+    value: 'oci-config-prod'
+  - name: ENV_REPORT_DATE_OFFSET_DAYS
+    value: '1' # Process yesterday's data
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: ccoe/tf-rxo-ccoe-infra
+      ref: apply-message  
 
 stages:
-- stage: Provision_Registry
-  displayName: '1. Provision Artifact Registry'
+- stage: BuildAndPush
+  displayName: 'Build and Push Docker Image'
   jobs:
-  - job: Terraform_Apply_Registry
-    displayName: 'Terraform Apply (Registry)'
-    steps:
-    - task: TerraformInstaller@1
-      displayName: 'Install Terraform'
-
-    - task: TerraformTaskV4@4
-      displayName: 'Terraform Init'
-      inputs:
-        provider: 'gcp'
-        command: 'init'
-        workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/1-artifact-registry'
-        backendServiceGCP: '$(gcpServiceConnection)'
-        backendGCPBucketName: '$(terraformStateBucket)'
-
-    - task: TerraformTaskV4@4
-      displayName: 'Terraform Apply'
-      inputs:
-        provider: 'gcp'
-        command: 'apply'
-        workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/1-artifact-registry'
-        environmentServiceNameGCP: '$(gcpServiceConnection)'
-        commandOptions: >-
-          -auto-approve 
-          -var="gcp_project_id=$(gcpProjectID)" 
-          -var="gcp_region=$(gcpRegion)"
-          -var="artifact_repo_name=$(artifactRepositoryName)"
-
-- stage: Build_and_Push
-  displayName: '2. Build and Push Docker Image'
-  dependsOn: Provision_Registry
-  jobs:
-  - job: Build_Push_Image
-    displayName: 'Build and Push to Artifact Registry'
+  - job: Build
+    displayName: 'Docker Build and Push'
     steps:
     - task: Docker@2
-      displayName: 'Build and Push Image'
+      displayName: 'Log in to Artifact Registry'
       inputs:
-        containerRegistry: '$(dockerRegistryServiceConnection)'
-        repository: '$(imageRepository)'
+        command: 'login'
+        containerRegistry: '$(gcpServiceConnection)'
+        # Uses the fully qualified registry path for login
+        arguments: '$(gcpRegion)-docker.pkg.dev'
+
+    - task: Docker@2
+      displayName: 'Build and Push Image to Artifact Registry'
+      inputs:
+        containerRegistry: '$(gcpServiceConnection)'
+        repository: '$(gcpRegion)-docker.pkg.dev/$(gcpProjectId)/$(artifactRepoId)/$(dockerImageName)'
         command: 'buildAndPush'
-        Dockerfile: '$(System.DefaultWorkingDirectory)/src/Dockerfile'
-        tags: '$(imageTag)'
+        Dockerfile: '$(sourceDir)/Dockerfile'
+        buildContext: '$(sourceDir)' # Set context to /src folder
+        tags: |
+          $(imageTag)
+          latest # Also push 'latest' tag for dev convenience
 
-- stage: Deploy_Job
-  displayName: '3. Deploy Cloud Run Job & Scheduler'
-  dependsOn: Build_and_Push
+- stage: 'Artifact registry'
   jobs:
-  - job: Terraform_Apply_Job
-    displayName: 'Terraform Apply (Cloud Run Job)'
+  - job: ArtifactRegistry
     steps:
-    - task: TerraformInstaller@1
-      displayName: 'Install Terraform'
-
-    - task: TerraformTaskV4@4
-      displayName: 'Terraform Init'
-      inputs:
-        provider: 'gcp'
-        command: 'init'
-        workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/2-cloud-run-job'
-        backendServiceGCP: '$(gcpServiceConnection)'
-        backendGCPBucketName: '$(terraformStateBucket)'
-
-    - task: TerraformTaskV4@4
-      displayName: 'Terraform Apply'
-      inputs:
-        provider: 'gcp'
-        command: 'apply'
-        workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/2-cloud-run-job'
-        environmentServiceNameGCP: '$(gcpServiceConnection)'
-        commandOptions: >-
-          -auto-approve
-          -var="gcp_project_id=$(gcpProjectID)"
-          -var="gcp_region=$(gcpRegion)"
-          -var="image_url=$(imageRepository):$(imageTag)"
-
-
+    - script: |
+        echo "Deploying Artifact registry"
+  - template: jobs/terraform-plan.yml@templates
+    parameters:
+      environmentName: 'dev'
+      TF_TOKEN: $(TF_TOKEN)
+      terraformDirectory: '$(tfWorkingDir)/artifact_registry'
