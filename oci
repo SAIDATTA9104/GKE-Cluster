@@ -1,96 +1,73 @@
-trigger: 
+# azure-pipelines.yml
+trigger:
   branches:
     include:
-      - alldir-yaml 
-
-# parameters:
-# - name: templateDirectory
-#   type: string 
-#   default: 'iam'  
+      - main
 
 variables:
-- group: 'ccoe-non-prod'
-
-variables:
-  - group: 'ccoe-non-prod'
-  # --- INFRASTRUCTURE & DEPLOYMENT VARIABLES ---
-  - name: gcpServiceConnection
-    value: '<GCP_SERVICE_CONNECTION_NAME>' # Replace with your GCP Service Connection name
-  - name: gcpProjectId
-    value: <>
-  - name: gcpRegion
-    value: 'us-central1'
-  - name: artifactRepoId
-    value: 'oci-report-repo'
-  - name: dockerImageName
-    value: 'oci-report-image'
-  - name: imageTag
-    value: '$(Build.BuildId)' # Use a unique build ID as the image tag
-  - name: sourceDir
-    value: '$(System.DefaultWorkingDirectory)/src'
-  - name: tfWorkingDir
-    value: '$(System.DefaultWorkingDirectory)/iac'
-  - name: scheduleCron
-    value: '0 0 * * *' # Midnight UTC
-
-  # --- RUNTIME CONFIGURATION VARIABLES (Passed to Python Script) ---
-  - name: ENV_GCP_PROJECT_ID
-    value: '$(gcpProjectId)'
-  - name: ENV_BIGQUERY_DATASET_ID
-    value: 'oci_prod_dataset'
-  - name: ENV_BIGQUERY_TABLE_NAME
-    value: 'daily_cost'
-  - name: ENV_GCS_REPORT_BUCKET_NAME
-    value: 'oci-cost-reports-bucket'
-  - name: ENV_GCS_STAGING_FOLDER
-    value: 'staged-reports/'
-  - name: ENV_GCP_OCI_CONFIG_SECRET_ID
-    value: 'oci-config-prod'
-  - name: ENV_REPORT_DATE_OFFSET_DAYS
-    value: '1' # Process yesterday's data
-
-resources:
-  repositories:
-    - repository: templates
-      type: git
-      name: ccoe/tf-rxo-ccoe-infra
-      ref: apply-message  
+  # These should be set in pipeline variable group or pipeline variables securely
+  GCP_PROJECT_ID: 'my-gcp-project'            # override in ADO pipeline variables
+  GCP_REGION: 'asia-south1'
+  IMAGE_REPO: 'cloudrun-images'
+  IMAGE_NAME: 'oci-reports'
+  TF_WORKING_DIR: 'infra/terraform/prod'
 
 stages:
-- stage: BuildAndPush
-  displayName: 'Build and Push Docker Image'
+- stage: BuildAndDeploy
   jobs:
-  - job: Build
-    displayName: 'Docker Build and Push'
+  - job: Build_Push_Terraform
+    pool:
+      vmImage: 'ubuntu-latest'
     steps:
-    - task: Docker@2
-      displayName: 'Log in to Artifact Registry'
+    - task: UsePythonVersion@0
       inputs:
-        command: 'login'
-        containerRegistry: '$(gcpServiceConnection)'
-        # Uses the fully qualified registry path for login
-        arguments: '$(gcpRegion)-docker.pkg.dev'
-
-    - task: Docker@2
-      displayName: 'Build and Push Image to Artifact Registry'
-      inputs:
-        containerRegistry: '$(gcpServiceConnection)'
-        repository: '$(gcpRegion)-docker.pkg.dev/$(gcpProjectId)/$(artifactRepoId)/$(dockerImageName)'
-        command: 'buildAndPush'
-        Dockerfile: '$(sourceDir)/Dockerfile'
-        buildContext: '$(sourceDir)' # Set context to /src folder
-        tags: |
-          $(imageTag)
-          latest # Also push 'latest' tag for dev convenience
-
-- stage: 'Artifact registry'
-  jobs:
-  - job: ArtifactRegistry
-    steps:
+        versionSpec: '3.11'
     - script: |
-        echo "Deploying Artifact registry"
-  - template: jobs/terraform-plan.yml@templates
-    parameters:
-      environmentName: 'dev'
-      TF_TOKEN: $(TF_TOKEN)
-      terraformDirectory: '$(tfWorkingDir)/artifact_registry'
+        echo "Setting up environment..."
+        python -V
+      displayName: 'Verify Python'
+
+    # Fetch the GCP service account key from a secure pipeline variable (GCP_SA_KEY)
+    # Recommended: store it in a secure file in library and use a pipeline secret variable containing the JSON.
+    - bash: |
+        echo "Writing GCP service account key to file..."
+        echo '$(GCP_SA_KEY)' > /tmp/gcp-key.json
+        export GOOGLE_APPLICATION_CREDENTIALS="/tmp/gcp-key.json"
+        gcloud --quiet auth activate-service-account --key-file="$GOOGLE_APPLICATION_CREDENTIALS"
+        gcloud config set project ${GCP_PROJECT_ID}
+      env:
+        GCP_PROJECT_ID: $(GCP_PROJECT_ID)
+      displayName: 'Authenticate to GCP'
+
+    - bash: |
+        # Configure docker for artifact registry
+        REGION=${GCP_REGION}
+        REPO=${IMAGE_REPO}
+        IMAGE=${IMAGE_NAME}
+        TAG=$(Build.SourceVersion)
+        FULL_IMAGE="${REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${REPO}/${IMAGE}:${TAG}"
+        echo "FULL_IMAGE=$FULL_IMAGE" > image.env
+        # enable required APIs if not enabled (optional)
+        gcloud services enable artifactregistry.googleapis.com --project=${GCP_PROJECT_ID}
+        # create docker repo if not exists - can be handled by terraform as well
+        # Build and push
+        docker --version
+        gcloud auth configure-docker ${GCP_REGION}-docker.pkg.dev --quiet
+        docker build -f infra/docker/Dockerfile -t ${FULL_IMAGE} .
+        docker push ${FULL_IMAGE}
+      displayName: 'Build and Push Docker image'
+
+    - script: |
+        # pass the image path into tfvars or env var used by terraform
+        source image.env
+        IMAGE_TAG=$(cat image.env | sed -n 's/^FULL_IMAGE=//p')
+        echo "Image built: $IMAGE_TAG"
+        # set TF env var for provider auth
+        export GOOGLE_APPLICATION_CREDENTIALS="/tmp/gcp-key.json"
+        cd ${TF_WORKING_DIR}
+        terraform init -input=false
+        terraform plan -input=false -out=tfplan -var="project_id=${GCP_PROJECT_ID}" -var="container_image=${IMAGE_TAG}" -var="terraform_state_bucket=${TF_STATE_BUCKET}"
+        terraform apply -input=false -auto-approve tfplan
+      env:
+        TF_STATE_BUCKET: $(TF_STATE_BUCKET)   # set in pipeline variables (existing state bucket)
+      displayName: 'Terraform Init/Plan/Apply'
