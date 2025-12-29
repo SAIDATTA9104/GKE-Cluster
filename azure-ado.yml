@@ -1,0 +1,61 @@
+trigger: none # We only want to trigger this via API
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+# 1. Define the parameters to accept from the JSON Payload
+parameters:
+  - name: rgName
+    displayName: Resource Group Name
+    type: string
+    default: 'my-default-rg'
+  - name: location
+    displayName: Azure Region
+    type: string
+    default: 'East US'
+  - name: budgetAmount
+    displayName: Budget Amount
+    type: number
+    default: 100
+  - name: alertEmail
+    displayName: Alert Email
+    type: string
+    default: 'admin@example.com'
+  - name: budgetStartDate
+    displayName: Start Date (YYYY-MM-DD)
+    type: string
+    default: '2024-01-01T00:00:00Z'
+
+steps:
+# 2. Install Terraform
+- task: TerraformInstaller@0
+  inputs:
+    terraformVersion: 'latest'
+
+# 3. Initialize Terraform (Connect to State Backend)
+- task: TerraformTaskV4@4
+  displayName: 'Terraform Init'
+  inputs:
+    provider: 'azurerm'
+    command: 'init'
+    backendServiceArm: 'azure-connection-sc' # Your Service Connection Name
+    backendAzureRmResourceGroupName: 'terraform-storage-rg'
+    backendAzureRmStorageAccountName: 'tfstateunique123'
+    backendAzureRmContainerName: 'tfstate'
+    backendAzureRmKey: 'budget.terraform.tfstate'
+
+# 4. Terraform Apply (Inject Payload Parameters into Terraform Variables)
+- task: TerraformTaskV4@4
+  displayName: 'Terraform Apply'
+  inputs:
+    provider: 'azurerm'
+    command: 'apply'
+    environmentServiceNameAzureRM: 'azure-connection-sc' # Your Service Connection Name
+    # This is where the magic happens: Mapping Parameters to -var flags
+    commandOptions: >
+      -var="rg_name=${{ parameters.rgName }}"
+      -var="location=${{ parameters.location }}"
+      -var="budget_amount=${{ parameters.budgetAmount }}"
+      -var="alert_email=${{ parameters.alertEmail }}"
+      -var="budget_start_date=${{ parameters.budgetStartDate }}"
+      -auto-approve
