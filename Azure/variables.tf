@@ -13,10 +13,19 @@ variable "email_address" {
   type        = string
 }
 
-// ... existing variables ...
 
 variable "location" {
   description = "The Azure region where resources will be deployed"
   type        = string
   default     = "global" # Choose your desired default Azure region
+}
+
+variable "action_group_name" {
+    description = "The name of the Action Group"
+    type        = string
+}
+
+variable "alert_name" {
+    description = "The name of the Activity Log Alert"
+    type        = string
 }

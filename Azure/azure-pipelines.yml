@@ -1,0 +1,59 @@
+trigger:
+- main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+parameters:
+  - name: subscription_id
+    displayName: 'Azure Subscription ID'
+    type: string
+    default: '0d149717-9de4-4387-9658-7e747a44388c' 
+  - name: resource_group_name
+    displayName: 'Resource Group Name'
+    type: string
+    default: 'AZ-Devops-1'
+  - name: action_group_name
+    displayName: 'Action Group Name'
+    type: string
+    default: 'CCOE-Budget-Alert'
+
+variables:
+  alert_name: 'Service Request Alert'
+  location: 'global'
+
+steps:
+- task: TerraformInstaller@0
+  inputs:
+    terraformVersion: 'latest'
+
+- script: |
+    echo "Generating terraform.tfvars..."
+    cat <<EOF > terraform.tfvars
+    subscription_id     = "${{ parameters.subscription_id }}"
+    resource_group_name = "${{ parameters.resource_group_name }}"
+    email_address       = "$(email_address)"
+    action_group_name   = "${{ parameters.action_group_name }}"
+    alert_name          = "$(alert_name)"
+    location            = "$(location)"
+    EOF
+    
+    echo "Content of terraform.tfvars:"
+    cat terraform.tfvars
+  displayName: 'Create terraform.tfvars'
+
+- script: |
+    terraform init
+    terraform validate
+  displayName: 'Terraform Init and Validate'
+
+- script: |
+    terraform plan -out=tfplan
+  displayName: 'Terraform Plan'
+  env:
+    ARM_SUBSCRIPTION_ID: ${{ parameters.subscription_id }}
+
+- script: |
+    # terraform apply -auto-approve tfplan
+    echo "Apply step is commented out for safety. Uncomment to enable automatic application."
+  displayName: 'Terraform Apply'
